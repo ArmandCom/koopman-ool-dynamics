@@ -6,29 +6,41 @@ from PIL import Image
 class DisentanglementDataset(Dataset):
     """Face Landmarks dataset."""
 
-    def __init__(self, ground_truth_class, transform=None):
+    def __init__(self, ground_truth_class, seq_length, stride, train=True, train_split=0.8, transform=None):
 
         self.data_class = ground_truth_class
         self.transform = transform
-        self.seq_len = 10
-        self.stride = 1
+        self.seq_len = seq_length
+        self.stride = stride
+        self.train = train
+        self.train_split = train_split
         self._calculate_factor_space_length()
 
+        #Split between train and test sets
+        idx_full = np.arange(self.length)
+        np.random.seed(0)
+        np.random.shuffle(idx_full)
 
+        len_test = int((1-train_split)*self.length)
+        test_idx = idx_full[0:len_test]
+        train_idx = np.delete(idx_full, np.arange(0, len_test))
+        if train:
+            self.split = train_idx
+        else:
+            self.split = test_idx
+
+        # For quick testing of the main loading functions
         self.random_state = np.random.RandomState()
-        index = self.random_state.randint(self.length)
-
-        sample = self._generate_training_sample(self.data_class,
-                              seq_len=self.seq_len, index=index, random_state=self.random_state)
+        # index = self.random_state.randint(self.length)
+        # sample = self._generate_training_sample(self.data_class, index=index)
 
     def __len__(self):
-        return self.length
+        return len(self.split)
 
     def __getitem__(self, idx):
 
-        sample = self._generate_training_sample(self.data_class,
-                              seq_len=self.seq_len, index=idx, random_state=self.random_state)
-
+        split_index = self.split[idx]
+        sample = self._generate_training_sample(self.data_class, index=split_index)
         if self.transform:
             sample = self.transform(sample)
 
@@ -45,6 +57,8 @@ class DisentanglementDataset(Dataset):
                 self.num_varying_factors += 1
             else:
                 self.usable_factor_lengths.append(item)
+        if self.num_varying_factors == 0:
+            raise Exception("No varying factors in dataset!!!")
         self.len_factor_space = np.prod(self.usable_factor_lengths)
         self.len_activation_and_direction = 3 ** self.num_varying_factors - 1
         self.length = self.len_factor_space * self.len_activation_and_direction
@@ -97,30 +111,27 @@ class DisentanglementDataset(Dataset):
                 all_factors[:, fac_id] = factor
         return all_factors
 
-    def _generate_training_sample(self, ground_truth_data,
-                                  seq_len, index, random_state):
-      """Sample a single training sample based on a mini-batch of ground-truth data.
+    def _generate_training_sample(self, ground_truth_data, index):
+        """Sample a single training sample based on a mini-batch of ground-truth data.
 
-      Args:
+        Args:
         ground_truth_data: GroundTruthData to be sampled from.
-        representation_function: Function that takes observation as input and
-          outputs a representation.
-        batch_size: Number of points to be used to compute the training_sample
-        random_state: Numpy random state used for randomness.
+        index: dataset index
 
-      Returns:
-        index: Index of coordinate to be used.
-        feature_vector: Feature vector of training sample.
-      """
-      ini_factors, directions = self._get_initial_factors_and_direction(index)
-      factors = self._get_factors(ini_factors, directions)
+        Returns:
+        sample: Video sample
 
-      sample = ground_truth_data.sample_observations_from_factors(
+        """
+        ini_factors, directions = self._get_initial_factors_and_direction(index)
+        factors = self._get_factors(ini_factors, directions)
+
+        sample = ground_truth_data.sample_observations_from_factors(
           factors, self.random_state)
 
-      # _save_example_observation(observation1, seq_len)
+        #Note: Save sample video
+        # _save_example_observation(sample, self.seq_len)
 
-      return sample
+        return sample
 
 
 def _save_example_observation(sequence, length):

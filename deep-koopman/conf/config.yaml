@@ -1,0 +1,6 @@
+defaults:
+  - dataset: dsprites
+
+resume:
+device:
+run_id:

@@ -31,7 +31,7 @@ class SBImageDecoder(nn.Module):
     #   ngf = ngf // 2
     # layers += [nn.ConvTranspose2d(ngf, out_channels, 4, 2, 1, bias=False)]
 
-    layers = [nn.ConvTranspose2d(feat_dim, ngf, 3, 1, 1, bias=False),
+    layers = [nn.ConvTranspose2d(feat_dim + 2, ngf, 3, 1, 1, bias=False), # feat_dim + 2 (coord_dim)
               nn.BatchNorm2d(ngf),
               nn.ReLU(True)]
 

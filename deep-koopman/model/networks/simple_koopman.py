@@ -110,7 +110,7 @@ class l2_norm_layer(nn.Module):
 
 class PropagationNetwork(nn.Module):
 
-    def __init__(self, input_particle_dim, input_relation_dim, output_dim, nf_particle, nf_relation, nf_effect,
+    def __init__(self, input_particle_dim, nf_particle, nf_effect, output_dim,
                  tanh=False, residual=False, use_gpu=False):
 
         super(PropagationNetwork, self).__init__()
@@ -121,11 +121,14 @@ class PropagationNetwork(nn.Module):
         # (1) state
         self.obj_encoder = ParticleEncoder(input_particle_dim, nf_particle, nf_effect)
 
+        # Note: when we get to the point of encoding relations, we are making a (strong) assumption that a single object doesn't have interacting dynamics
+
+
         # (1) state receiver (2) state_diff
-        self.relation_encoder = RelationEncoder(input_relation_dim, nf_relation, nf_relation)
+        # self.relation_encoder = RelationEncoder(input_relation_dim, nf_relation, nf_relation)
 
         # (1) relation encode (2) sender effect (3) receiver effect
-        self.relation_propagator = Propagator(nf_relation + 2 * nf_effect, nf_effect)
+        # self.relation_propagator = Propagator(nf_relation + 2 * nf_effect, nf_effect)
 
         # (1) particle encode (2) particle effect
         # self.particle_propagator = Propagator(2 * nf_effect, nf_effect, self.residual)
@@ -140,29 +143,19 @@ class PropagationNetwork(nn.Module):
                 self.particle_predictor, nn.Tanh()
             )
 
-    def forward(self, attrs, states, actions, rel_attrs, pstep):
+    def forward(self, states, pstep):
         """
-        :param attrs: B x N x attr_dim
         :param states: B x N x state_dim
-        :param actions: B x N x action_dim
-        :param rel_attrs: B x N x N x relation_dim
         :param pstep: 1 or 2
         :return:
         """
         # Note: Sizes for Rope
-        # torch.Size([8, 64, 6, 2])
         # torch.Size([8, 64, 6, 4])
-        # torch.Size([8, 64, 6, 1])
-        # torch.Size([8, 64, 6, 6, 8])
 
-        B, N = attrs.size(0), attrs.size(1)
         '''encode node'''
-        obj_input_list = [attrs, states]
-        if self.action:
-            obj_input_list += [actions]
+        # Note: attrs indicate meta-information about the state. Which kind of node are we talking about, for instance
+        obj_encode = self.obj_encoder(states)
 
-        tmp = torch.cat(obj_input_list, 2)
-        obj_encode = self.obj_encoder(tmp.reshape(tmp.size(0) * tmp.size(1), tmp.size(2))).reshape(B, N, -1)
 
         '''encode edge'''
         # rel_states = states[:, :, None, :] - states[:, None, :, :]
@@ -184,80 +177,59 @@ class PropagationNetwork(nn.Module):
             '''calc particle effect'''
             # tmp = torch.cat([obj_encode, rel_agg_effect], 2)
             tmp = obj_encode
-            obj_encode = self.particle_propagator(tmp.reshape(B * N, -1)).reshape(B, N, -1)
+            obj_encode = self.particle_propagator(tmp)
 
-        obj_prediction = self.particle_predictor(obj_encode.reshape(B * N, -1)).reshape(B, N, -1)
+        obj_prediction = self.particle_predictor(obj_encode)
         return obj_prediction
 
 
 # ======================================================================================================================
 class KoopmanOperators(nn.Module, ABC):
-    def __init__(self, args, residual=False, use_gpu=False):
+    def __init__(self, state_dim, nf_particle, nf_effect, g_dim, residual=False):
         super(KoopmanOperators, self).__init__()
 
-        self.args = args
-
         # self.stat = load_data(['attrs', 'states', 'actions'], args.stat_path)
-        self.stat = None
 
-        g_dim = args.g_dim
-
-        self.nf_effect = args.nf_effect
-
-        self.use_gpu = use_gpu
         self.residual = residual
 
         ''' state '''
         # Note: True? we should not include action in state encoder
-        input_particle_dim = args.attr_dim + args.state_dim
-        input_relation_dim = args.state_dim + args.relation_dim + args.attr_dim * 2
+        input_particle_dim = state_dim
 
-        # print('state_encoder', 'node', input_particle_dim, 'edge', input_relation_dim)
-
-        self.state_encoder = PropagationNetwork(
-            args, input_particle_dim=input_particle_dim, input_relation_dim=input_relation_dim,
-            output_dim=g_dim, action=False, tanh=True,  # use tanh to enforce the shape of the code space
-            residual=residual, use_gpu=use_gpu)
         self.mapping = PropagationNetwork(
-            args, input_particle_dim=input_particle_dim, input_relation_dim=input_relation_dim,
-            output_dim=g_dim, action=False, tanh=True,  # use tanh to enforce the shape of the code space
-            residual=residual, use_gpu=use_gpu)
+            input_particle_dim=input_particle_dim, nf_particle=nf_particle,
+            nf_effect=nf_effect, output_dim=g_dim, tanh=True,  # use tanh to enforce the shape of the code space
+            residual=residual)
 
         # the state for decoding phase is replaced with code of g_dim
-        input_particle_dim = args.attr_dim + args.g_dim
-        input_relation_dim = args.g_dim + args.relation_dim + args.attr_dim * 2
+        input_particle_dim = g_dim
 
         # print('state_decoder', 'node', input_particle_dim, 'edge', input_relation_dim)
 
-        self.state_decoder = PropagationNetwork(
-            args, input_particle_dim=input_particle_dim, input_relation_dim=input_relation_dim,
-            output_dim=args.state_dim, action=False, tanh=False,
-            residual=residual, use_gpu=use_gpu)
         self.inv_mapping = PropagationNetwork(
-            args, input_particle_dim=input_particle_dim, input_relation_dim=input_relation_dim,
-            output_dim=g_dim, action=False, tanh=True,  # use tanh to enforce the shape of the code space
-            residual=residual, use_gpu=use_gpu)
+            input_particle_dim=input_particle_dim, nf_particle=nf_particle,
+            nf_effect=nf_effect, output_dim=state_dim, tanh=True, residual=residual)
 
-        ''' dynamical system coefficient: A and B '''
+        ''' dynamical system coefficient: A'''
         self.A = None
-        self.B = None
 
         self.system_identify = self.fit
         self.simulate = self.rollout
         self.step = self.linear_forward
 
-    def to_s(self, attrs, gcodes, rel_attrs, pstep):
+        # self.system_identify = self.fit_diagonal
+        # self.simulate = self.rollout_diagonal
+        # self.step = self.linear_forward_diagonal
+
+    def to_s(self, gcodes, pstep):
         """ state decoder """
+        states = self.inv_mapping(states=gcodes, pstep=pstep)
+        # regularize_state_Soft(states, rel_attrs, self.stat)
+        return states
 
-        if self.args.env in ['Soft', 'Swim']:
-            states = self.state_decoder(attrs=attrs, states=gcodes, actions=None, rel_attrs=rel_attrs, pstep=pstep)
-            return regularize_state_Soft(states, rel_attrs, self.stat)
-
-        return self.state_decoder(attrs=attrs, states=gcodes, actions=None, rel_attrs=rel_attrs, pstep=pstep)
-
-    def to_g(self, attrs, states, rel_attrs, pstep):
+    def to_g(self, states, pstep):
         """ state encoder """
-        return self.state_encoder(attrs=attrs, states=states, actions=None, rel_attrs=rel_attrs, pstep=pstep)
+        return self.mapping(states=states, pstep=pstep)
 
     @staticmethod
     def get_aug(G, rel_attrs):
@@ -285,7 +257,7 @@ class KoopmanOperators(nn.Module, ABC):
 
     # structured A
 
-    def fit(self, G, H, rel_attrs, I_factor):
+    def fit(self, G, H, I_factor=10):
         """
         :param G: B x T x N x D
         :param H: B x T x N x D
@@ -298,11 +270,11 @@ class KoopmanOperators(nn.Module, ABC):
         """
 
         ''' B x R: sqrt(# of appearance of block matrices of the same type)'''
-        rel_weights = torch.sqrt(rel_attrs.sum(1).sum(1))
-        rel_weights = torch.clamp(rel_weights, min=1e-8)
+        # rel_weights = torch.sqrt(rel_attrs.sum(1).sum(1))
+        # rel_weights = torch.clamp(rel_weights, min=1e-8)
 
         bs, T, N, D = G.size()
-        R = rel_attrs.size(-1)
+        # R = rel_attrs.size(-1)
 
         ''' B x T x N x R D '''
         # augG = self.get_aug(G, rel_attrs)
@@ -317,15 +289,16 @@ class KoopmanOperators(nn.Module, ABC):
             self.batch_pinv(G_reweight, I_factor),
             H.reshape(bs, T * N, D)
         )
-        self.A = A_reweight[:, :R * D].reshape(bs, R, D, D) / rel_weights[:, :, None, None]
-        self.A = self.A.reshape(bs, R * D, D)
+        # self.A = A_reweight[:, :R * D].reshape(bs, R, D, D) / rel_weights[:, :, None, None]
+        # self.A = self.A.reshape(bs, R * D, D)
+        self.A = A_reweight.reshape(bs, D, D)
 
         fit_err = H.reshape(bs, T * N, D) - torch.bmm(G_reweight, A_reweight)
         fit_err = torch.sqrt((fit_err ** 2).mean())
 
-        return self.A, None, fit_err
+        return self.A, fit_err
 
-    def linear_forward(self, g, rel_attrs):
+    def linear_forward(self, g, A):
         """
         :param g: B x N x D
         :param u: B x N x a_dim
@@ -333,13 +306,13 @@ class KoopmanOperators(nn.Module, ABC):
         :return:
         """
         ''' B x N x R D '''
-        aug_g = self.get_aug(G=g[:, None, :, :], rel_attrs=rel_attrs)[:, 0]
-        aug_g = g[:, None, :, :]
+        # aug_g = self.get_aug(G=g[:, None, :, :], rel_attrs=rel_attrs)[:, 0]
+        aug_g = g[:, None, :]
 
-        new_g = torch.bmm(aug_g, self.A)
+        new_g = torch.bmm(aug_g, A)
         return new_g
 
-    def rollout(self, g, T, rel_attrs):
+    def rollout(self, g, T, A):
         """
         :param g: B x N x D
         :param rel_attrs: B x N x N x R
@@ -348,7 +321,34 @@ class KoopmanOperators(nn.Module, ABC):
         """
         g_list = []
         for t in range(T):
-            g = self.linear_forward(g, rel_attrs)
+            g = self.linear_forward(g, A)[:,0] # For single object
+            g_list.append(g[:, None, :])
+        return torch.cat(g_list, 1)
+
+#####################################################################################
+    def fit_diagonal(self, G, H, U, I_factor, rel_attrs=None):
+        bs, T, N, D = G.size()
+
+        '''B x (D) x D'''
+        A = torch.bmm(
+            self.batch_pinv(G.reshape(bs, T * N, D), I_factor),
+            H.reshape(bs, T * N, D)
+        )
+        self.A = A
+
+        fit_err = H.reshape(bs, T * N, D) - torch.bmm(G.reshape(bs, T * N, D), A)
+        fit_err = torch.sqrt((fit_err ** 2).mean())
+
+        return self.A, fit_err
+
+    def linear_forward_diagonal(self, g):
+        new_g = torch.bmm(g, self.A)
+        return new_g
+
+    def rollout_diagonal(self, g, T):
+        g_list = []
+        for t in range(T):
+            g = self.linear_forward_diagonal(g)
             g_list.append(g[:, None, :, :])
         return torch.cat(g_list, 1)
 

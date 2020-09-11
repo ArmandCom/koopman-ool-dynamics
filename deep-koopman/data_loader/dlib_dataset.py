@@ -41,6 +41,7 @@ class DisentanglementDataset(Dataset):
 
         split_index = self.split[idx]
         sample = self._generate_training_sample(self.data_class, index=split_index)
+        sample = sample[:, None, :, :, 0]
         if self.transform:
             sample = self.transform(sample)
 

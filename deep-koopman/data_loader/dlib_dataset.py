@@ -21,9 +21,10 @@ class DisentanglementDataset(Dataset):
         np.random.seed(0)
         np.random.shuffle(idx_full)
 
-        len_test = int((1-train_split)*self.length)
+        len_test = int((1-train_split) * self.length)
         test_idx = idx_full[0:len_test]
         train_idx = np.delete(idx_full, np.arange(0, len_test))
+
         if train:
             self.split = train_idx
         else:
@@ -103,11 +104,11 @@ class DisentanglementDataset(Dataset):
                 if directions[count] == 0:
                     all_factors[:, fac_id] = factor
                 else:
-                    sweep = list(range(factor, factor + self.seq_len, self.stride))
+                    sweep = list(range(factor, factor + self.stride*self.seq_len, self.stride))
                     if directions[count] == 2:
                         sweep.reverse()
                     all_factors[:, fac_id] = sweep
-                count+=1
+                count += 1
             else:
                 all_factors[:, fac_id] = factor
         return all_factors
@@ -129,7 +130,7 @@ class DisentanglementDataset(Dataset):
         sample = ground_truth_data.sample_observations_from_factors(
           factors, self.random_state)
 
-        #Note: Save sample video
+        # Note: Save sample video
         # _save_example_observation(sample, self.seq_len)
 
         return sample

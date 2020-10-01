@@ -185,7 +185,7 @@ class PropagationNetwork(nn.Module):
 
 # ======================================================================================================================
 class KoopmanOperators(nn.Module, ABC):
-    def __init__(self, state_dim, nf_particle, nf_effect, g_dim, residual=False):
+    def __init__(self, state_dim, nf_particle, nf_effect, g_dim, n_timesteps, residual=False):
         super(KoopmanOperators, self).__init__()
 
         # self.stat = load_data(['attrs', 'states', 'actions'], args.stat_path)
@@ -194,11 +194,11 @@ class KoopmanOperators(nn.Module, ABC):
 
         ''' state '''
         # Note: True? we should not include action in state encoder
-        input_particle_dim = state_dim
+        input_particle_dim = state_dim * n_timesteps
 
         self.mapping = PropagationNetwork(
             input_particle_dim=input_particle_dim, nf_particle=nf_particle,
-            nf_effect=nf_effect, output_dim=g_dim, tanh=True,  # use tanh to enforce the shape of the code space
+            nf_effect=nf_effect, output_dim=g_dim * 2, tanh=False,  # use tanh to enforce the shape of the code space
             residual=residual)
 
         # the state for decoding phase is replaced with code of g_dim
@@ -208,18 +208,18 @@ class KoopmanOperators(nn.Module, ABC):
 
         self.inv_mapping = PropagationNetwork(
             input_particle_dim=input_particle_dim, nf_particle=nf_particle,
-            nf_effect=nf_effect, output_dim=state_dim, tanh=True, residual=residual)
+            nf_effect=nf_effect, output_dim=state_dim, tanh=False, residual=residual)
 
         ''' dynamical system coefficient: A'''
         self.A = None
 
-        self.system_identify = self.fit
-        self.simulate = self.rollout
-        self.step = self.linear_forward
+        # self.system_identify = self.fit
+        # self.simulate = self.rollout
+        # self.step = self.linear_forward
 
-        # self.system_identify = self.fit_diagonal
-        # self.simulate = self.rollout_diagonal
-        # self.step = self.linear_forward_diagonal
+        self.system_identify = self.fit_diagonal
+        self.simulate = self.rollout_diagonal
+        self.step = self.linear_forward_diagonal
 
     def to_s(self, gcodes, pstep):
         """ state decoder """
@@ -326,30 +326,58 @@ class KoopmanOperators(nn.Module, ABC):
         return torch.cat(g_list, 1)
 
 #####################################################################################
-    def fit_diagonal(self, G, H, U, I_factor, rel_attrs=None):
+    def fit_diagonal(self, G, H, I_factor):
         bs, T, N, D = G.size()
+        G, H = G.permute(0, 3, 1, 2), H.permute(0, 3, 1, 2)
 
         '''B x (D) x D'''
         A = torch.bmm(
-            self.batch_pinv(G.reshape(bs, T * N, D), I_factor),
-            H.reshape(bs, T * N, D)
+            self.batch_pinv(G.reshape(bs * D, T * N, 1), I_factor),
+            H.reshape(bs * D, T * N, 1)
         )
-        self.A = A
+        # self.A = A
 
-        fit_err = H.reshape(bs, T * N, D) - torch.bmm(G.reshape(bs, T * N, D), A)
+        fit_err = H.reshape(bs * D, T * N, 1) - torch.bmm(G.reshape(bs * D, T * N, 1), A)
         fit_err = torch.sqrt((fit_err ** 2).mean())
 
-        return self.A, fit_err
+        return A, fit_err
 
-    def linear_forward_diagonal(self, g):
-        new_g = torch.bmm(g, self.A)
+    # def linear_forward_diagonal(self, g, A):
+    #     new_g = torch.bmm(g, A)
+    #     return new_g
+    #
+    # def rollout_diagonal(self, g, T, A):
+    #     g_list = []
+    #     for t in range(T):
+    #         g = self.linear_forward_diagonal(g, A)
+    #         g_list.append(g[:, None, :])
+    #     return torch.cat(g_list, 1)
+
+    def linear_forward_diagonal(self, g, A):
+        """
+        :param g: B x N x D
+        :param u: B x N x a_dim
+        :param rel_attrs: B x N x N x R
+        :return:
+        """
+        ''' B x N x R D '''
+        bs, dim = g.shape
+        aug_g = g.reshape(-1, 1, 1)
+        new_g = torch.bmm(aug_g, A).reshape(bs, 1, dim)
+
         return new_g
 
-    def rollout_diagonal(self, g, T):
+    def rollout_diagonal(self, g, T, A):
+        """
+        :param g: B x N x D
+        :param rel_attrs: B x N x N x R
+        :param T:
+        :return:
+        """
         g_list = []
         for t in range(T):
-            g = self.linear_forward_diagonal(g)
-            g_list.append(g[:, None, :, :])
+            g = self.linear_forward_diagonal(g, A)[:,0] # For single object
+            g_list.append(g[:, None, :])
         return torch.cat(g_list, 1)
 
     @staticmethod
@@ -375,7 +403,7 @@ class KoopmanOperators(nn.Module, ABC):
         use_gpu = torch.cuda.is_available()
         I = torch.eye(D)[None, :, :].repeat(B, 1, 1)
         if use_gpu:
-            I = I.cuda()
+            I = I.to(x.device)
 
         x_pinv = torch.bmm(
             torch.inverse(torch.bmm(x_t, x) + I_factor * I),

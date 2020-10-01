@@ -12,13 +12,22 @@ class ImageEncoder(nn.Module):
         super(ImageEncoder, self).__init__()
 
         layers = [nn.Conv2d(in_channels, ngf, 4, 2, 1, bias=False),
-                  nn.LeakyReLU(0.2, inplace=True)]
+                  nn.ReLU(True)]  # nn.LeakyReLU(0.2, inplace=True)]
 
         for i in range(1, n_layers - 1):
             layers += [nn.Conv2d(ngf, ngf * 2, 4, 2, 1, bias=False),
                        nn.BatchNorm2d(ngf * 2),
-                       nn.LeakyReLU(0.2, inplace=True)]
+                       nn.ReLU(True)]  # nn.LeakyReLU(0.2, inplace=True)]
             ngf *= 2
+
+        # layers = [nn.Conv2d(in_channels, ngf, 4, 2, 1, bias=False),
+        #           nn.ReLU(inplace=True)]
+        #
+        # for i in range(1, n_layers - 1):
+        #     layers += [nn.Conv2d(ngf, ngf * 2, 4, 2, 1, bias=False),
+        #                nn.BatchNorm2d(ngf * 2),
+        #                nn.ReLU(inplace=True)]
+        #     ngf *= 2
 
         layers += [nn.Conv2d(ngf, feat_dim, 4, 1, 0, bias=False)]
 

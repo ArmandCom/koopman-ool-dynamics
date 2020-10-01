@@ -1,8 +1,9 @@
 import numpy as np
 import torch
 from torchvision.utils import make_grid
+from torchvision.transforms.functional import to_tensor
 from base import BaseTrainer
-from utils import inf_loop, MetricTracker
+from utils import inf_loop, plot_representation, MetricTracker
 
 
 class Trainer(BaseTrainer):
@@ -55,13 +56,16 @@ class Trainer(BaseTrainer):
                 self.train_metrics.update(met.__name__, met(output, target))
 
             if batch_idx % self.log_step == 0:
-                loss_particles_str = sum([(key + ': {:.6f}, '.format(loss_particles[key].item()) for key in loss_particles)])
-                self.logger.debug('Train Epoch: {} {} Loss: {:.6f}, '.format(
-                    epoch,
-                    self._progress(batch_idx),
-                    loss.item()) + loss_particles_str)
+                loss_particles_str = " ".join([key + ': {:.6f}, '.format(loss_particles[key].item()) for key in loss_particles])
 
-                self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
+                self.logger.debug('Train Epoch: {} {} '.format(epoch, self._progress(batch_idx)) + loss_particles_str + 'Loss: {:.6f}'.format(
+                    loss.item()))
+
+                g_plot = plot_representation(output[2].cpu())
+                self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
+                self.writer.add_image('input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
+                self.writer.add_image('output', make_grid(output[0][0].cpu(), nrow=output[0].shape[1], normalize=True))
+                self.writer.add_image('output_pred', make_grid(output[1][0].cpu(), nrow=output[1].shape[1], normalize=True))
 
             if batch_idx == self.len_epoch:
                 break
@@ -72,7 +76,9 @@ class Trainer(BaseTrainer):
             log.update(**{'val_'+k : v for k, v in val_log.items()})
 
         if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
+            # self.lr_scheduler.step(loss)
+            self.lr_scheduler.step() #Note: If it doesn't require argument.
+            self.writer.add_scalar('LR', self.optimizer.param_groups[0]['lr'])
         return log
 
     def _valid_epoch(self, epoch):
@@ -85,17 +91,23 @@ class Trainer(BaseTrainer):
         self.model.eval()
         self.valid_metrics.reset()
         with torch.no_grad():
-            for batch_idx, (data, target) in enumerate(self.valid_data_loader):
+            for batch_idx, data in enumerate(self.valid_data_loader):
+                target = data  # Is data a variable?
                 data, target = data.to(self.device), target.to(self.device)
 
                 output = self.model(data)
-                loss = self.criterion(output, target)
+                loss, loss_particles = self.criterion(output, target, lambd=self.config["trainer"]["lambd"])
 
                 self.writer.set_step((epoch - 1) * len(self.valid_data_loader) + batch_idx, 'valid')
                 self.valid_metrics.update('loss', loss.item())
                 for met in self.metric_ftns:
                     self.valid_metrics.update(met.__name__, met(output, target))
-                self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
+
+                g_plot = plot_representation(output[2].cpu())
+                self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
+                self.writer.add_image('input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
+                self.writer.add_image('output', make_grid(output[0][0].cpu(), nrow=output[0].shape[1], normalize=True))
+                self.writer.add_image('output_pred', make_grid(output[1][0].cpu(), nrow=output[1].shape[1], normalize=True))
 
         # add histogram of model parameters to the tensorboard
         for name, p in self.model.named_parameters():

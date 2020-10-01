@@ -44,6 +44,8 @@ def get_named_ground_truth_data(name, data_path):
     return dsprites.DSprites(data_path, [1, 2, 3, 4, 5])
   elif name == "dsprites_noshape":
     return dsprites.DSprites(data_path, [2, 3, 4, 5])
+  elif name == "dsprites_noshape_norotation":
+    return dsprites.DSprites(data_path, [2, 4, 5])
   elif name == "color_dsprites":
     return dsprites.ColorDSprites(data_path, [1, 2, 3, 4, 5])
   elif name == "noisy_dsprites":

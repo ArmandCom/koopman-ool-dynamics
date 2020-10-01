@@ -23,6 +23,7 @@ np.random.seed(SEED)
 @hydra.main(config_path="conf/config.yaml")
 def main(cfg_dict : DictConfig):
 
+    # TODO: erase previous logs in the folder at every run
     config = ConfigParser(cfg_dict)
     logger = config.get_logger('train')
 

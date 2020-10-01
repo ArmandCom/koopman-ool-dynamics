@@ -10,7 +10,7 @@ class BaseDataLoader(DataLoader):
     """
     Base class for all data loaders
     """
-    def __init__(self, dataset, batch_size, shuffle, validation_split, num_workers, collate_fn=default_collate):
+    def __init__(self, dataset, batch_size, shuffle, validation_split, dataset_reduction, num_workers, collate_fn=default_collate):
         self.validation_split = validation_split
         self.shuffle = shuffle
 
@@ -20,7 +20,7 @@ class BaseDataLoader(DataLoader):
         self.n_samples = len(dataset.split)
 
 
-        self.sampler, self.valid_sampler = self._split_sampler(self.validation_split)
+        self.sampler, self.valid_sampler = self._split_sampler(self.validation_split, dataset_reduction)
 
         self.init_kwargs = {
             'dataset': dataset,
@@ -31,7 +31,7 @@ class BaseDataLoader(DataLoader):
         }
         super().__init__(sampler=self.sampler, **self.init_kwargs)
 
-    def _split_sampler(self, split):
+    def _split_sampler(self, split, dataset_reduction=0):
         if split == 0.0:
             return None, None
 
@@ -39,17 +39,19 @@ class BaseDataLoader(DataLoader):
 
         np.random.seed(0)
         np.random.shuffle(idx_full)
+        idx_full = idx_full[:int((1-dataset_reduction) * self.n_samples)]
 
         if isinstance(split, int):
             assert split > 0
             assert split < self.n_samples, "validation set size is configured to be larger than entire dataset."
             len_valid = split
         else:
-            len_valid = int(self.n_samples * split)
+            len_valid = int(self.n_samples * split * (1 - dataset_reduction))
 
         valid_idx = idx_full[0:len_valid]
         train_idx = np.delete(idx_full, np.arange(0, len_valid))
 
+        # TODO: mirar on es defineix la epoch
         train_sampler = SubsetRandomSampler(train_idx)
         valid_sampler = SubsetRandomSampler(valid_idx)
 

@@ -21,7 +21,7 @@ class DlibLoader(BaseDataLoader):
     """
     disentanglement_lib dataset loading using BaseDataLoader
     """
-    def __init__(self, dataset_name, seq_length, seq_stride, data_dir, batch_size, shuffle=True, training_split=0.9, validation_split=0.0, num_workers=1, training=True):
+    def __init__(self, dataset_name, seq_length, seq_stride, data_dir, batch_size, shuffle=True, training_split=0.9, validation_split=0.0, dataset_reduction=0, num_workers=1, training=True):
 
         self.data_dir = data_dir
         self.name = dataset_name
@@ -29,4 +29,4 @@ class DlibLoader(BaseDataLoader):
         self.dataset = DisentanglementDataset(self.ground_truth_class, seq_length, seq_stride,
                                               train=training, train_split=training_split)
 
-        super().__init__(self.dataset, batch_size, shuffle, validation_split, num_workers)
+        super().__init__(self.dataset, batch_size, shuffle, validation_split, dataset_reduction, num_workers)

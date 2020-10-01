@@ -1,0 +1,12 @@
+Todo List
+
+General TODOs
+
+1. implement VAE using pyro framework
+2. implement basic version of koopman. Only system matrix, no interactions, with prediction capability in DSPRITES
+3. implement multiobject with no interactions. Slot attention with 2 objects and no interactions for DSPRITES
+4. implement koopman with interactions. A and B (with inputs and object interactions) matrices with different structures. Test in new dataset.
+
+5. Define experiments for different tasks.
+6. Define baselines for each experiment.
+

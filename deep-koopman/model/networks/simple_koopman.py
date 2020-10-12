@@ -182,6 +182,56 @@ class PropagationNetwork(nn.Module):
         obj_prediction = self.particle_predictor(obj_encode)
         return obj_prediction
 
+class SimplePropagationNetwork(nn.Module):
+
+    def __init__(self, input_particle_dim, nf_particle, nf_effect, output_dim,
+                 tanh=False, residual=False, use_gpu=False):
+
+        super(SimplePropagationNetwork, self).__init__()
+
+        self.use_gpu = use_gpu
+        self.residual = residual
+
+        self.particle_predictor = ParticlePredictor(input_particle_dim, nf_particle, output_dim)
+
+
+        # layers = [nn.Conv2d(input_particle_dim, nf_particle, 1, 1, 0, bias=False),
+        #            nn.BatchNorm2d(nf_particle),
+        #            nn.LeakyReLU(0.2, inplace=True),
+        #            nn.Conv2d(nf_particle, output_dim, 1, 1, 0, bias=False)]
+        #
+        # self.particle_predictor = nn.Sequential(*layers)
+
+        # (1) state
+        # self.obj_encoder = ParticleEncoder(input_particle_dim, nf_particle, nf_effect)
+
+        # Note: when we get to the point of encoding relations, we are making a (strong) assumption that a single object doesn't have interacting dynamics
+        # rigid predictor
+        # (1) particle encode (2) set particle effect
+        # self.particle_predictor = ParticlePredictor(nf_effect, nf_effect, output_dim)
+
+        if tanh:
+            self.particle_predictor = nn.Sequential(
+                self.particle_predictor, nn.Tanh()
+            )
+
+    def forward(self, states, pstep):
+        """
+        :param states: B x N x state_dim
+        :param pstep: 1 or 2
+        :return:
+        """
+        # Note: Sizes for Rope
+        # torch.Size([8, 64, 6, 4])
+
+        '''encode node'''
+        # obj_encode = self.obj_encoder(states)
+        obj_encode = states
+        obj_prediction = self.particle_predictor(obj_encode)
+        # obj_prediction = obj_prediction[..., 0, 0]
+
+        return obj_prediction
+
 
 # ======================================================================================================================
 class KoopmanOperators(nn.Module, ABC):
@@ -196,7 +246,7 @@ class KoopmanOperators(nn.Module, ABC):
         # Note: True? we should not include action in state encoder
         input_particle_dim = state_dim * n_timesteps
 
-        self.mapping = PropagationNetwork(
+        self.mapping = SimplePropagationNetwork(
             input_particle_dim=input_particle_dim, nf_particle=nf_particle,
             nf_effect=nf_effect, output_dim=g_dim * 2, tanh=False,  # use tanh to enforce the shape of the code space
             residual=residual)
@@ -206,7 +256,7 @@ class KoopmanOperators(nn.Module, ABC):
 
         # print('state_decoder', 'node', input_particle_dim, 'edge', input_relation_dim)
 
-        self.inv_mapping = PropagationNetwork(
+        self.inv_mapping = SimplePropagationNetwork(
             input_particle_dim=input_particle_dim, nf_particle=nf_particle,
             nf_effect=nf_effect, output_dim=state_dim, tanh=False, residual=residual)
 

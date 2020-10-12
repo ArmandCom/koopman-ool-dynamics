@@ -40,23 +40,42 @@ def embedding_loss(output, target, lambd=0.3):
     rec_loss = 10 * mse_loss(rec, target[:, -rec.shape[1]:])\
         .view(rec.size(0)*(rec.size(1)), -1).sum(dim=-1).mean()
 
+    # pred_loss = torch.zeros(1)
     pred_loss = 10 * mse_loss(pred[:, :-free_pred], target[:, -pred.shape[1]:-free_pred])\
         .view(pred.size(0)*(pred.size(1)-free_pred), -1).sum(dim=-1).mean()
 
-    local_geo_loss = local_geo(g, target[:, -g.shape[1]:])
+    local_geo_loss = torch.zeros(1)
+    # local_geo_loss = local_geo(g, target[:, -g.shape[1]:])
 
-    loss = rec_loss + pred_loss + lambd * local_geo_loss + 2 * kl_loss
+    loss = rec_loss + 2 * kl_loss + pred_loss #+ lambd * local_geo_loss
 
     return loss, {'Rec Loss':rec_loss, 'Pred Loss':pred_loss, 'Local Geometry Loss':local_geo_loss, 'KL Loss':kl_loss}
 
-# permu = np.random.permutation(bs * (T + 1))
-# split_0 = permu[:bs * (T + 1) // 2]
-# split_1 = permu[bs * (T + 1) // 2:]
-# dist_g = torch.mean((g[split_0] - g[split_1]) ** 2, dim=(1, 2))
-# dist_s = torch.mean((states_flat[split_0] - states_flat[split_1]) ** 2, dim=(1, 2))
-# scaling_factor = 10
-# loss_metric = torch.abs(dist_g * scaling_factor - dist_s).mean()
-# loss_auto_encode = F.l1_loss(decode_s_for_ae, states[:, :T + 1].reshape(decode_s_for_ae.shape))
-# loss_prediction = F.l1_loss(decode_s_for_pred, states[:, 1:].reshape(decode_s_for_pred.shape))
-#
-# loss = loss_auto_encode + loss_prediction + loss_metric * args.lambda_loss_metric
+
+def explicit_embedding_loss(output, target, lambd=0.3):
+    assert len(output) == 4
+
+    # chequear input range
+    rec, pred, g, kl_loss = output
+
+    # reconstruct
+    rec = rec.view(*rec.shape[:2], -1)
+    size = rec.size(-1)
+    target_rec = target[:, -rec.shape[1]:]
+    log_p_x_g_z = -F.binary_cross_entropy_with_logits(rec, target_rec.view(*rec.shape)) * size
+
+    free_pred = 0
+    rec_loss = -log_p_x_g_z
+    pred_loss = torch.zeros(1)
+    # rec_loss = 10 * mse_loss(rec, target[:, -rec.shape[1]:])\
+    #     .view(rec.size(0)*(rec.size(1)), -1).sum(dim=-1).mean()
+    # # # pred_loss = 10 * mse_loss(pred[:, :-free_pred], target[:, -pred.shape[1]:-free_pred])\
+    # # #     .view(pred.size(0)*(pred.size(1)-free_pred), -1).sum(dim=-1).mean()
+    # log_p_x_g_z = -rec_loss #- 0 * pred_loss
+
+    elbo = log_p_x_g_z - kl_loss
+    # local_geo_loss = local_geo(g, target[:, -g.shape[1]:])
+
+    loss = -elbo #+ lambd * local_geo_loss
+
+    return loss, {'Rec Loss':rec_loss, 'Pred Loss':pred_loss, 'KL Loss':kl_loss} #'Local Geometry Loss':local_geo_loss,

@@ -68,7 +68,7 @@ class SBImageDecoder(nn.Module):
   '''
   Decode images from vectors. Similar structure as DCGAN.
   '''
-  def __init__(self, feat_dim, out_channels, ngf, n_layers, im_size, activation='tanh'): # (self, n_channels, output_size, ngf, n_layers)
+  def __init__(self, feat_dim, out_channels, ngf, n_layers, im_size, activation='sigmoid'): # (self, n_channels, output_size, ngf, n_layers)
     super(SBImageDecoder, self).__init__()
 
     # Coordinates for the broadcast decoder

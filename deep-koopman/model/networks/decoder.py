@@ -47,6 +47,8 @@ class ImageDecoder(nn.Module):
 
     self.main = nn.Sequential(
       nn.Linear(input_size, 256),  # B, 256
+      # nn.ReLU(True),
+      # nn.Linear(128, 256),  # B, 256
       View((-1, 256, 1, 1)),  # B, 256,  1,  1
       nn.ReLU(True),
       nn.ConvTranspose2d(256, 64, 4),  # B,  64,  4,  4

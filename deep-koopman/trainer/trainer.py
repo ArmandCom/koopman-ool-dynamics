@@ -3,7 +3,7 @@ import torch
 from torchvision.utils import make_grid
 from torchvision.transforms.functional import to_tensor
 from base import BaseTrainer
-from utils import inf_loop, plot_representation, MetricTracker
+from utils import inf_loop, plot_representation, plot_matrix, MetricTracker, overlap_objects_from_batch
 
 
 class Trainer(BaseTrainer):
@@ -45,6 +45,7 @@ class Trainer(BaseTrainer):
         self.train_metrics.reset()
 
         for batch_idx, data in enumerate(self.data_loader):
+            data = overlap_objects_from_batch(data, self.config['n_objects'])
             target = data # Is data a variable?
             data, target = data.to(self.device), target.to(self.device)
 
@@ -65,11 +66,25 @@ class Trainer(BaseTrainer):
                 self.logger.debug('Train Epoch: {} {} '.format(epoch, self._progress(batch_idx)) + loss_particles_str + 'Loss: {:.6f}'.format(
                     loss.item()))
 
-                g_plot = plot_representation(output[2].cpu())
+                g_plot = plot_representation(output[2][:,:output[0].shape[1]].cpu())
+                g_plot_pred = plot_representation(output[2][:, output[0].shape[1]:].cpu())
+                A_plot = plot_matrix(output[5])
+                if output[6] is not None:
+                    B_plot = plot_matrix(output[6])
+                    self.writer.add_image('B', make_grid(B_plot, nrow=1, normalize=False))
+                if output[7] is not None:
+                    u_plot = plot_representation(output[7][:, :output[7].shape[1]].cpu())
+                    self.writer.add_image('gu_repr', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
+                # obj_att = output[6][0].permute(1,2,3,0,4)
+                # obj_att = obj_att.reshape(*obj_att.shape[0:-2],-1).cpu()
+
+                self.writer.add_image('A', make_grid(A_plot, nrow=1, normalize=False))
                 self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
+                self.writer.add_image('g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
                 self.writer.add_image('input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
                 self.writer.add_image('output', make_grid(output[0][0].cpu(), nrow=output[0].shape[1], normalize=True))
                 self.writer.add_image('output_pred', make_grid(output[1][0].cpu(), nrow=output[1].shape[1], normalize=True))
+                # self.writer.add_image('obj_attention', make_grid(obj_att, nrow=obj_att.shape[1], normalize=True))
 
             if batch_idx == self.len_epoch:
                 break
@@ -96,6 +111,7 @@ class Trainer(BaseTrainer):
         self.valid_metrics.reset()
         with torch.no_grad():
             for batch_idx, data in enumerate(self.valid_data_loader):
+                data = overlap_objects_from_batch(data, self.config['n_objects'])
                 target = data  # Is data a variable?
                 data, target = data.to(self.device), target.to(self.device)
 
@@ -107,8 +123,19 @@ class Trainer(BaseTrainer):
                 for met in self.metric_ftns:
                     self.valid_metrics.update(met.__name__, met(output, target))
 
-                g_plot = plot_representation(output[2].cpu())
+                g_plot = plot_representation(output[2][:,:output[0].shape[1]].cpu())
+                g_plot_pred = plot_representation(output[2][:,output[0].shape[1]:].cpu())
+                A_plot = plot_matrix(output[5])
+                if output[6] is not None:
+                    B_plot = plot_matrix(output[6])
+                    self.writer.add_image('B', make_grid(B_plot, nrow=1, normalize=False))
+                if output[7] is not None:
+                    u_plot = plot_representation(output[7][:, :output[7].shape[1]].cpu())
+                    self.writer.add_image('gu_repr', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
+
+                self.writer.add_image('A', make_grid(A_plot, nrow=1, normalize=False))
                 self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
+                self.writer.add_image('g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
                 self.writer.add_image('input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
                 self.writer.add_image('output', make_grid(output[0][0].cpu(), nrow=output[0].shape[1], normalize=True))
                 self.writer.add_image('output_pred', make_grid(output[1][0].cpu(), nrow=output[1].shape[1], normalize=True))
@@ -127,3 +154,6 @@ class Trainer(BaseTrainer):
             current = batch_idx
             total = self.len_epoch
         return base.format(current, total, 100.0 * current / total)
+
+
+

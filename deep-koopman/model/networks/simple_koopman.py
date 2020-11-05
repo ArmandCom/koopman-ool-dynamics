@@ -238,13 +238,11 @@ class KoopmanOperators(nn.Module, ABC):
     def __init__(self, state_dim, nf_particle, nf_effect, g_dim, n_timesteps, residual=False):
         super(KoopmanOperators, self).__init__()
 
-        # self.stat = load_data(['attrs', 'states', 'actions'], args.stat_path)
-
         self.residual = residual
 
         ''' state '''
         # Note: True? we should not include action in state encoder
-        input_particle_dim = state_dim * n_timesteps
+        input_particle_dim = state_dim * n_timesteps + g_dim #TODO: g_dim added for recursive sampling
 
         self.mapping = SimplePropagationNetwork(
             input_particle_dim=input_particle_dim, nf_particle=nf_particle,
@@ -256,9 +254,9 @@ class KoopmanOperators(nn.Module, ABC):
 
         # print('state_decoder', 'node', input_particle_dim, 'edge', input_relation_dim)
 
-        self.inv_mapping = SimplePropagationNetwork(
-            input_particle_dim=input_particle_dim, nf_particle=nf_particle,
-            nf_effect=nf_effect, output_dim=state_dim, tanh=False, residual=residual)
+        # self.inv_mapping = SimplePropagationNetwork(
+        #     input_particle_dim=input_particle_dim, nf_particle=nf_particle,
+        #     nf_effect=nf_effect, output_dim=state_dim, tanh=False, residual=residual)
 
         ''' dynamical system coefficient: A'''
         self.A = None
@@ -267,9 +265,14 @@ class KoopmanOperators(nn.Module, ABC):
         # self.simulate = self.rollout
         # self.step = self.linear_forward
 
-        self.system_identify = self.fit_diagonal
-        self.simulate = self.rollout_diagonal
-        self.step = self.linear_forward_diagonal
+        # self.system_identify = self.fit_diagonal
+        # self.simulate = self.rollout_diagonal
+        # self.step = self.linear_forward_diagonal
+
+        self.system_identify = self.fit_block_diagonal
+        self.simulate = self.rollout_block_diagonal
+        self.step = self.linear_forward_block_diagonal
+        self.num_blocks = 2
 
     def to_s(self, gcodes, pstep):
         """ state decoder """
@@ -430,6 +433,90 @@ class KoopmanOperators(nn.Module, ABC):
             g_list.append(g[:, None, :])
         return torch.cat(g_list, 1)
 
+        #####################################################################################
+
+    def fit_block_diagonal(self, G, H, I_factor):
+
+        bs, T, N, D = G.size()
+
+        assert D % self.num_blocks == 0 and D % 2 == 0
+        block_size = D // self.num_blocks
+
+        # Different blocks
+        # sizes = [int((item/sum(blocks)) * D) for item in blocks]
+        # if sum(sizes) < D:
+        #     sizes[-1] = D - sum(sizes[:-1])
+
+        G, H = G.reshape(bs, T, N, -1, block_size), H.reshape(bs, T, N, -1, block_size)
+
+        G, H = G.permute(0, 3, 1, 2, 4), H.permute(0, 3, 1, 2, 4)
+
+        '''B x (D) x D'''
+        A = torch.bmm(
+            self.batch_pinv(G.reshape(bs * self.num_blocks, T * N, block_size), I_factor),
+            H.reshape(bs * self.num_blocks, T * N, block_size)
+        )
+        # self.A = A
+
+        # fit_err = H.reshape(bs * D//block_size, T * N, block_size) - torch.bmm(G.reshape(bs * D//block_size, T * N, block_size), A)
+        # fit_err = torch.sqrt((fit_err ** 2).mean())
+        fit_err = None
+
+        A = A.reshape(bs, self.num_blocks, block_size, block_size)
+
+        return A, fit_err
+
+    # def linear_forward_diagonal(self, g, A):
+    #     new_g = torch.bmm(g, A)
+    #     return new_g
+    #
+    # def rollout_diagonal(self, g, T, A):
+    #     g_list = []
+    #     for t in range(T):
+    #         g = self.linear_forward_diagonal(g, A)
+    #         g_list.append(g[:, None, :])
+    #     return torch.cat(g_list, 1)
+
+    def linear_forward_block_diagonal(self, g, A):
+        """
+        :param g: B x N x D
+        :return:
+        """
+        ''' B x N x R D '''
+        bs, dim = g.shape
+        block_size = A.shape[-1]
+        aug_g = g.reshape(-1, 1, block_size)
+        new_g = torch.bmm(aug_g, A.reshape(-1, block_size, block_size)).reshape(bs, 1, dim)
+
+        return new_g
+
+    def linear_forward_block_diagonal_general(self, g, A):
+        """
+        :param g: B x N x D
+        :return:
+        """
+        ''' B x N x R D '''
+        bs, dim = g.shape
+        block_size = A.shape[-1]
+        aug_g = g.reshape(-1, 1, block_size)
+        new_g = torch.bmm(aug_g, A.reshape(-1, block_size, block_size)).reshape(bs, 1, dim)
+
+        return new_g
+
+    def rollout_block_diagonal(self, g, T, A):
+        """
+        :param g: B x N x D
+        :param rel_attrs: B x N x N x R
+        :param T:
+        :return:
+        """
+        g_list = []
+        for t in range(T):
+            g = self.linear_forward_block_diagonal(g, A)[:, 0]  # For single object
+            g_list.append(g[:, None, :])
+        return torch.cat(g_list, 1)
+
+
     @staticmethod
     def batch_pinv(x, I_factor):
 
@@ -465,82 +552,10 @@ class KoopmanOperators(nn.Module, ABC):
 
         return x_pinv
 
-    # unstructured large A
-    #
-    # def fit_unstructured(self, G, H, U, I_factor, rel_attrs=None):
-    #     """
-    #     :param G: B x T x N x D
-    #     :param H: B x T x N x D
-    #     :param U: B x T x N x a_dim
-    #     :param I_factor: scalor
-    #     :return: A, B
-    #     s.t.
-    #     H = catG @ A + catU @ B
-    #     """
-    #     bs, T, N, D = G.size()
-    #     G = G.reshape(bs, T, -1)
-    #     H = H.reshape(bs, T, -1)
-    #     U = U.reshape(bs, T, -1)
-    #
-    #     G_U = torch.cat([G, U], 2)
-    #     A_B = torch.bmm(
-    #         self.batch_pinv(G_U, I_factor),
-    #         H
-    #     )
-    #     self.A = A_B[:, :N * D]
-    #     self.B = A_B[:, N * D:]
-    #
-    #     fit_err = H - torch.bmm(G_U, A_B)
-    #     fit_err = torch.sqrt((fit_err ** 2).mean())
-    #
-    #     return self.A, self.B, fit_err
-    #
-    # def linear_forward_unstructured(self, g, u, rel_attrs=None):
-    #     B, N, D = g.size()
-    #     a_dim = u.size(-1)
-    #     g = g.reshape(B, 1, N * D)
-    #     u = u.reshape(B, 1, N * a_dim)
-    #     new_g = torch.bmm(g, self.A) + torch.bmm(u, self.B)
-    #     return new_g.reshape(B, N, D)
-    #
-    # def rollout_unstructured(self, g, u_seq, T, rel_attrs=None):
-    #     g_list = []
-    #     for t in range(T):
-    #         g = self.linear_forward_unstructured(g, u_seq[:, t])
-    #         g_list.append(g[:, None, :, :])
-    #     return torch.cat(g_list, 1)
-    #
-    # # shared small A
-    #
-    # def fit_diagonal(self, G, H, U, I_factor, rel_attrs=None):
-    #     bs, T, N, D = G.size()
-    #     a_dim = U.size(3)
-    #
-    #     G_U = torch.cat([G, U], 3)
-    #
-    #     '''B x (D + a_dim) x D'''
-    #     A_B = torch.bmm(
-    #         self.batch_pinv(G_U.reshape(bs, T * N, D + a_dim), I_factor),
-    #         H.reshape(bs, T * N, D)
-    #     )
-    #     self.A = A_B[:, :D]
-    #     self.B = A_B[:, D:]
-    #
-    #     fit_err = H.reshape(bs, T * N, D) - torch.bmm(G_U.reshape(bs, T * N, D + a_dim), A_B)
-    #     fit_err = torch.sqrt((fit_err ** 2).mean())
-    #
-    #     return self.A, self.B, fit_err
-    #
-    # def linear_forward_diagonal(self, g, u, rel_attrs=None):
-    #     new_g = torch.bmm(g, self.A) + torch.bmm(u, self.B)
-    #     return new_g
-    #
-    # def rollout_diagonal(self, g, u_seq, T, rel_attrs=None):
-    #     g_list = []
-    #     for t in range(T):
-    #         g = self.linear_forward_diagonal(g, u_seq[:, t])
-    #         g_list.append(g[:, None, :, :])
-    #     return torch.cat(g_list, 1)
+
+
+
+
 
 def regularize_state_Soft(states, rel_attrs, stat):
     """

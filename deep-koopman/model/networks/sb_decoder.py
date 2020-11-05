@@ -2,6 +2,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class View(nn.Module):
+    def __init__(self, size):
+        super(View, self).__init__()
+        self.size = size
+
+    def forward(self, tensor):
+        return tensor.view(self.size)
+
 class SimpleSBImageDecoder(nn.Module):
   '''
   Decode images from vectors. Similar structure as DCGAN.
@@ -18,35 +26,49 @@ class SimpleSBImageDecoder(nn.Module):
     self.register_buffer('x_grid', x_grid.view((1, 1) + x_grid.shape))
     self.register_buffer('y_grid', y_grid.view((1, 1) + y_grid.shape))
 
-    ngf = 64
-    layers = [nn.Conv2d(feat_dim + 2, ngf, 3, 1, 1, bias=False), # feat_dim + 2 (coord_dim)
-              nn.BatchNorm2d(ngf),
-              nn.ReLU(True)] # nn.LeakyReLU(0.2, inplace=True)]
+    # ngf = 64
+    # layers = [nn.Conv2d(feat_dim + 2, ngf, 3, 1, 1, bias=False), # feat_dim + 2 (coord_dim)
+    #           nn.BatchNorm2d(ngf),
+    #           nn.ReLU(True)] # nn.LeakyReLU(0.2, inplace=True)]
+    #
+    # for i in range(2):
+    #     layers += [nn.Conv2d(ngf, ngf, 3, 1, 1, bias=False),
+    #                nn.BatchNorm2d(ngf),
+    #                nn.ReLU(True)]  # nn.LeakyReLU(0.2, inplace=True)]
+    #
+    # layers += [nn.Conv2d(ngf, out_channels, 3, 1, 1, bias=False)]
+    # self.conv_decoder = nn.Sequential(*layers)
 
-    for i in range(2):
-        layers += [nn.Conv2d(ngf, ngf, 3, 1, 1, bias=False),
-                   nn.BatchNorm2d(ngf),
-                   nn.ReLU(True)]  # nn.LeakyReLU(0.2, inplace=True)]
+    self.linear_layers = nn.Sequential(
+        nn.Linear(feat_dim, 256),  # B, 256
+        View((-1, 64, 1, 1)),  # B, 256,  1,  1
+        nn.ReLU(True))
 
-    layers += [nn.Conv2d(ngf, out_channels, 3, 1, 1, bias=False)]
+    self.conv_decoder = nn.Sequential(
+      nn.Conv2d(64 + 2, 64, 3, 1, 1),  # B,  64,  4,  4
+      nn.ReLU(True),
+      nn.Conv2d(64, 64, 3, 1, 1),  # B,  64,  8,  8
+      nn.ReLU(True),
+      nn.Conv2d(64, 32, 3, 1, 1),  # B,  32, 16, 16
+      nn.ReLU(True),
+      nn.Conv2d(32, 32, 3, 1, 1),  # B,  32, 32, 32
+      nn.ReLU(True),
+      nn.Conv2d(32, out_channels, 3, 1, 1),  # B, nc, 64, 64
+      # nn.Sigmoid()
+    )
 
-    if activation == 'tanh':
-      layers += [nn.Tanh()]
-    elif activation == 'sigmoid':
-      layers += [nn.Sigmoid()]
-    else:
-      raise NotImplementedError
-
-    self.conv_decoder = nn.Sequential(*layers)
     self.main = self.sb_decoder
 
   def sb_decoder(self, z):
 
       batch_size = z.size(0)
 
+      # Linear layers before expanding
+      z = self.linear_layers(z)
+
       # View z as 4D tensor to be tiled across new H and W dimensions
       # Shape: NxDx1x1
-      z = z.view(z.shape + (1, 1))
+      # z = z.view(z.shape + (1, 1))
 
       # Tile across to match image size
       # Shape: NxDx64x64

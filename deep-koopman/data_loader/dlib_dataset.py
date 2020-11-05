@@ -21,15 +21,15 @@ class DisentanglementDataset(Dataset):
         np.random.seed(0)
         np.random.shuffle(idx_full)
 
-        len_test = int((1-train_split) * self.length)
-        test_idx = idx_full[0:len_test]
-        train_idx = np.delete(idx_full, np.arange(0, len_test))
+        # len_test = int((1-train_split) * self.length)
+        # test_idx = idx_full[0:len_test]
+        # train_idx = np.delete(idx_full, np.arange(0, len_test))
+        # if train:
+        #     self.split = train_idx
+        # else:
+        #     self.split = test_idx
 
-        if train:
-            self.split = train_idx
-        else:
-            self.split = test_idx
-
+        self.split = idx_full
         # For quick testing of the main loading functions
         self.random_state = np.random.RandomState()
         # index = self.random_state.randint(self.length)
@@ -45,7 +45,6 @@ class DisentanglementDataset(Dataset):
         sample = sample[:, None, :, :, 0]
         if self.transform:
             sample = self.transform(sample)
-
         return sample
 
     def _calculate_factor_space_length(self):

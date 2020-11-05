@@ -9,6 +9,8 @@ from parse_config import ConfigParser
 import hydra
 from omegaconf import DictConfig
 
+
+# TODO: Full test function has to be modified according to the new changes.
 @hydra.main(config_path="conf/config.yaml")
 def main(cfg_dict : DictConfig):
 
@@ -50,13 +52,16 @@ def main(cfg_dict : DictConfig):
 
     with torch.no_grad():
         for i, (data, target) in enumerate(tqdm(data_loader)):
+
+            # TODO: overlap objects with overlap_objects_from_batch in util.oy
+            # TODO: check model's output is correct for the loss_fn
+
             data, target = data.to(device), target.to(device)
             output = model(data)
 
             #
             # save sample images, or do something with output here
             #
-
             # computing loss, metrics on test set
             loss = loss_fn(output, target)
             batch_size = data.shape[0]

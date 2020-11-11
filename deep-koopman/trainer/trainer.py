@@ -66,25 +66,7 @@ class Trainer(BaseTrainer):
                 self.logger.debug('Train Epoch: {} {} '.format(epoch, self._progress(batch_idx)) + loss_particles_str + 'Loss: {:.6f}'.format(
                     loss.item()))
 
-                g_plot = plot_representation(output[2][:,:output[0].shape[1]].cpu())
-                g_plot_pred = plot_representation(output[2][:, output[0].shape[1]:].cpu())
-                A_plot = plot_matrix(output[5])
-                if output[6] is not None:
-                    B_plot = plot_matrix(output[6])
-                    self.writer.add_image('B', make_grid(B_plot, nrow=1, normalize=False))
-                if output[7] is not None:
-                    u_plot = plot_representation(output[7][:, :output[7].shape[1]].cpu())
-                    self.writer.add_image('gu_repr', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
-                # obj_att = output[6][0].permute(1,2,3,0,4)
-                # obj_att = obj_att.reshape(*obj_att.shape[0:-2],-1).cpu()
-
-                self.writer.add_image('A', make_grid(A_plot, nrow=1, normalize=False))
-                self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
-                self.writer.add_image('g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
-                self.writer.add_image('input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
-                self.writer.add_image('output', make_grid(output[0][0].cpu(), nrow=output[0].shape[1], normalize=True))
-                self.writer.add_image('output_pred', make_grid(output[1][0].cpu(), nrow=output[1].shape[1], normalize=True))
-                # self.writer.add_image('obj_attention', make_grid(obj_att, nrow=obj_att.shape[1], normalize=True))
+                self._show(data, output)
 
             if batch_idx == self.len_epoch:
                 break
@@ -123,22 +105,7 @@ class Trainer(BaseTrainer):
                 for met in self.metric_ftns:
                     self.valid_metrics.update(met.__name__, met(output, target))
 
-                g_plot = plot_representation(output[2][:,:output[0].shape[1]].cpu())
-                g_plot_pred = plot_representation(output[2][:,output[0].shape[1]:].cpu())
-                A_plot = plot_matrix(output[5])
-                if output[6] is not None:
-                    B_plot = plot_matrix(output[6])
-                    self.writer.add_image('B', make_grid(B_plot, nrow=1, normalize=False))
-                if output[7] is not None:
-                    u_plot = plot_representation(output[7][:, :output[7].shape[1]].cpu())
-                    self.writer.add_image('gu_repr', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
-
-                self.writer.add_image('A', make_grid(A_plot, nrow=1, normalize=False))
-                self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
-                self.writer.add_image('g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
-                self.writer.add_image('input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
-                self.writer.add_image('output', make_grid(output[0][0].cpu(), nrow=output[0].shape[1], normalize=True))
-                self.writer.add_image('output_pred', make_grid(output[1][0].cpu(), nrow=output[1].shape[1], normalize=True))
+                self._show(data, output, train=False)
 
         # add histogram of model parameters to the tensorboard
         for name, p in self.model.named_parameters():
@@ -154,6 +121,30 @@ class Trainer(BaseTrainer):
             current = batch_idx
             total = self.len_epoch
         return base.format(current, total, 100.0 * current / total)
+
+    def _show(self, data, output, train=True):
+        g_plot = plot_representation(output[2][:,:output[0].shape[1]].cpu())
+        g_plot_pred = plot_representation(output[2][:,output[0].shape[1]:].cpu())
+        A_plot = plot_matrix(output[5])
+        if output[6] is not None:
+            B_plot = plot_matrix(output[6])
+            self.writer.add_image('B', make_grid(B_plot, nrow=1, normalize=False))
+        if output[7] is not None:
+            u_plot = plot_representation(output[7][:, :output[7].shape[1]].cpu())
+            self.writer.add_image('gu_repr', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
+
+        # if output[8] is not None:
+        #     g_rev_plot = plot_representation(output[8][:, :output[0].shape[1]].cpu())
+        #     g_rev_plot_pred = plot_representation(output[8][:,output[0].shape[1]:].cpu())
+        #     self.writer.add_image('g_rev_repr', make_grid(to_tensor(g_rev_plot), nrow=1, normalize=False))
+        #     self.writer.add_image('g_rev_repr_pred', make_grid(to_tensor(g_rev_plot_pred), nrow=1, normalize=False))
+
+        self.writer.add_image('A', make_grid(A_plot, nrow=1, normalize=False))
+        self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
+        self.writer.add_image('g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
+        self.writer.add_image('input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
+        self.writer.add_image('output', make_grid(output[0][0].cpu(), nrow=output[0].shape[1], normalize=True))
+        self.writer.add_image('output_pred', make_grid(output[1][0].cpu(), nrow=output[1].shape[1], normalize=True))
 
 
 

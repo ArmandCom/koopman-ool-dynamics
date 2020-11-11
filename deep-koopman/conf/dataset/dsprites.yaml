@@ -16,11 +16,12 @@ arch:
   type: "RecKoopmanModel"
   args:
     in_channels: 1
-    feat_dim: &Fdim 40
-    g_dim: &Gdim 20
+    feat_dim: &Fdim 20
+    g_dim: &Gdim 10
     u_dim: 4
     n_objects: *Nobj
     I_factor: 0.01
+    n_blocks: 2
     nf_particle: *Fdim
     nf_effect: *Fdim
     psteps: 1
@@ -29,11 +30,11 @@ arch:
     image_size: *IS
 
 data_loader:
-#  type: "DlibLoader"
-  type: "MovingMNISTLoader"
+  type: "DlibLoader"
+#  type: "MovingMNISTLoader"
   args:
-#    dataset_name: "dsprites_noshape_norotation"
-    dataset_name: ""
+    dataset_name: "dsprites_noshape_norotation"
+#    dataset_name: ""
     seq_length: *SeqL
     seq_stride: 1
     n_objects: *Nobj

@@ -5,5 +5,4 @@ from .s_decoder import deconvSpatialDecoder, linearSpatialDecoder
 from .s_linear_encoder import LinearEncoder
 # from .simple_koopman import KoopmanOperators
 from .koopman import KoopmanOperators
-from .slot_attention_encoder import AttImageEncoder
 from .object_attention import ObjectAttention

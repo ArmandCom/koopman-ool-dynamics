@@ -7,7 +7,7 @@ from base import BaseModel
 #     KoopmanOperators, AttImageEncoder, ImageDecoder, \
 #     deconvSpatialDecoder, linearSpatialDecoder, LinearEncoder, ObjectAttention
 from model.networks import KoopmanOperators
-from model.networks_slot_attention import ImageEncoder, ImageDecoder
+from model.networks_slot_attention import ImageEncoder, AttImageEncoder, ImageDecoder
 # from model.networks_cswm.modules import TransitionGNN, EncoderCNNLarge, EncoderCNNMedium, EncoderCNNSmall, EncoderMLP, DecoderCNNLarge, DecoderCNNMedium, DecoderCNNSmall, DecoderMLP
 from torch.autograd import Variable
 import matplotlib.pyplot as plt
@@ -30,24 +30,21 @@ def _sample_latent_simple(mu, logvar, n_samples=1):
     sample = mu + eps * std
     return sample
 
-def _sample_latent_general(mu, var):
-    std = var
-    eps = torch.randn_like(std)
-    return mu + var * eps
-
-def logvar_to_matrix_var(logvar):
-    var = torch.exp(logvar)
-    var_mat = torch.diag_embed(var)
-    return var_mat
+# def _sample_latent_general(mu, var):
+#     std = var
+#     eps = torch.randn_like(std)
+#     return mu + var * eps
 
 class RecKoopmanModel(BaseModel):
     def __init__(self, in_channels, feat_dim, nf_particle, nf_effect, g_dim, u_dim,
-                 n_objects, I_factor=10, n_blocks=1, psteps=1, n_timesteps=1, ngf=8, image_size=[64, 64]):
+                 n_objects, I_factor=10, psteps=1, n_timesteps=1, ngf=8, image_size=[64, 64]):
         super().__init__()
         out_channels = 1
         n_layers = int(np.log2(image_size[0])) - 1
 
         self.u_dim = u_dim
+        self.linear_g = nn.Linear(g_dim, g_dim)
+        self.linear_u = nn.Linear(g_dim, u_dim)
 
         # Temporal encoding buffers
         if n_timesteps > 1:
@@ -63,19 +60,18 @@ class RecKoopmanModel(BaseModel):
         self.psteps = psteps
         self.g_dim = g_dim
         self.n_objects = n_objects
+        self.n_directions = 2
 
         self.softmax = nn.Softmax(dim=-1)
         self.sigmoid = nn.Sigmoid()
 
-        self.linear_g = nn.Linear(g_dim, g_dim)
-        self.linear_u = nn.Linear(g_dim, u_dim)
         self.initial_conditions = nn.Sequential(nn.Linear(feat_dim * n_timesteps * 2, feat_dim * n_timesteps),
                                                 nn.ReLU(),
                                                 nn.Linear(feat_dim * n_timesteps, g_dim * 2))
 
         self.image_encoder = ImageEncoder(in_channels, feat_dim * 2, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
         self.image_decoder = ImageDecoder(g_dim, out_channels, ngf, n_layers)
-        self.koopman = KoopmanOperators(feat_dim * 2, nf_particle * 2, nf_effect * 2, g_dim, u_dim, n_timesteps, n_blocks)
+        self.koopman = KoopmanOperators(feat_dim * 2, nf_particle * 2, nf_effect * 2, g_dim, u_dim, n_timesteps)
 
         #Object attention:
         # if n_objects > 1:
@@ -93,34 +89,33 @@ class RecKoopmanModel(BaseModel):
                          for idx in range(self.n_timesteps)], dim=-1))
         # torch.cat([ torch.zeros_like( , x[:,0,0:1]) + self.t_grid[idx]], dim=-1)
         new_x = torch.stack(new_x, dim=2)
-
         return new_x.reshape(-1, *new_x.shape[3:]), new_T
 
     def forward(self, input):
         bs, T, ch, h, w = input.shape
 
-        f = self.image_encoder(input)
+        f = self.image_encoder(input, reverse=True)
         # Concatenates the features from current time and previous to create full state
         f, T = self._get_full_state(f, T)
-        # TODO: Might be bug. I'm reshaping with objects before T.
-        f = f.view(torch.Size([bs * self.n_objects, T]) + f.size()[1:])
+        f = f.reshape(self.n_directions*bs*self.n_objects, T, f.shape[-1])
 
         f_mu, f_logvar, a_mu, a_logvar = [], [], [], []
         gs, us = [], []
         for t in range(T):
             if t==0:
+                # f_t = self.initial_conditions(f[:, t])
                 prev_sample = torch.zeros_like(f[:, 0, :self.g_dim])
+                # f_t = torch.cat([f_ini, prev_sample], dim=-1)
+                prev_hidden = None
+
                 f_t = torch.cat([f[:, t], prev_sample], dim=-1)
-                g = self.koopman.to_g(f_t, self.psteps)
-                # g = self.initial_conditions(f[:, t])
+                g, u = self.koopman.to_g(f_t, psteps=self.psteps)
             else:
                 f_t = torch.cat([f[:, t], prev_sample], dim=-1)
-                g = self.koopman.to_g(f_t, self.psteps)
-                # TODO: provar recurrent, suposo
                 # g, prev_hidden, u = self.koopman.to_g(f_t, prev_hidden) #,psteps=self.psteps
+                g, u = self.koopman.to_g(f_t, psteps=self.psteps)
             g_mu, g_logvar = torch.chunk(g, 2, dim=-1)
             g = _sample_latent_simple(g_mu, g_logvar)
-
             # if t < T-1:
             #     u_mu, u_logvar = torch.chunk(u, 2, dim=-1)
             #     u = _sample_latent_simple(u_mu, u_logvar)
@@ -128,7 +123,7 @@ class RecKoopmanModel(BaseModel):
             #     u_mu, u_logvar = torch.chunk(torch.zeros_like(u), 2, dim=-1)
             #     u = u_mu
             # g, u = self.linear_g(g), self.sigmoid(self.linear_u(u))
-            g, u = self.linear_g(g), self.sigmoid(self.linear_u(g))
+            g, u = self.linear_g(g), self.linear_u(g)
 
             prev_sample = g
 
@@ -145,35 +140,32 @@ class RecKoopmanModel(BaseModel):
         f_logvar = torch.stack(f_logvar, dim=1)
 
         u = torch.stack(us, dim=1)
-        # u_zeros = torch.zeros_likes_like(u)
-        # u = torch.where(u > 0.8, u, u_zeros)
         # a_mu = torch.stack(a_mu, dim=1)
         # a_logvar = torch.stack(a_logvar, dim=1)
 
+        reverse = True
+        if reverse:
+            g_rsh = g.view(torch.Size([bs, self.n_directions, self.n_objects, T]) + g.size()[2:])
+            g_rev = g_rsh[:, 0].reshape(bs * self.n_objects, T, g_rsh.shape[-1])
+            g = g_rsh[:, 1].reshape(bs * self.n_objects, T, g_rsh.shape[-1])
+
         free_pred = 0
         if free_pred > 0:
-            G_tilde = g[:, 1:-1-free_pred, None]  # new axis corresponding to N number of objects
-            H_tilde = g[:, 2:-free_pred, None]
+            G_tilde = g[:, :-1-free_pred, None]  # new axis corresponding to N number of objects
+            H_tilde = g[:, 1:-free_pred, None]
         else:
-            G_tilde = g[:, 1:-1, None]  # new axis corresponding to N number of objects
-            H_tilde = g[:, 2:, None]
+            G_tilde = g[:, :-1, None]  # new axis corresponding to N number of objects
+            H_tilde = g[:, 1:, None]
 
-        A, B, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[:, 1:-1], I_factor=self.I_factor)
-        # TODO: clamp A before invert. Threshold u over 0.9
+        # A, B, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[:, :-1], I_factor=self.I_factor)
+        A, A_pinv, fit_err = self.koopman.fit_block_diagonal_A(G=G_tilde, H=H_tilde, I_factor=self.I_factor)
 
-        # A, A_pinv, fit_err = self.koopman.fit_block_diagonal_A(G=G_tilde, H=H_tilde, I_factor=self.I_factor)
-        # TODO: Try simulating backwards
-        # B=None
         # Rollout. From observation in time 0, predict with Koopman operator
         # G_for_pred = self.koopman.simulate(T=T - 1, g=g[:, 0], u=u, A=A, B=B)
-        # G_for_pred = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A, B=None)
-
-        '''Simple version of the reverse rollout'''
-        # G_for_pred_rev = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A_pinv, B=None)
-        # G_for_pred = torch.flip(G_for_pred_rev, dims=[1])
-
-        G_for_pred = torch.cat([g[:,0:1],self.koopman.simulate(T=T - 2, g=g[:, 1], u=u, A=A, B=B)], dim=1)
-
+        G_for_pred = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A, B=None)
+        G_for_pred_rev = self.koopman.simulate(T=T - 1, g=g_rev[:, 0], u=None, A=A_pinv, B=None)
+        B=None
+        # G_for_pred = torch.cat([g[:,0:1],self.koopman.simulate(T=T - 2, g=g[:, 1], A=A)], dim=1)
 
         # Option 1: use the koopman object decoder
         # s_for_rec = self.koopman.to_s(gcodes=_get_flat(g),
@@ -181,41 +173,53 @@ class RecKoopmanModel(BaseModel):
         # s_for_pred = self.koopman.to_s(gcodes=_get_flat(torch.cat([g[:, :1],G_for_pred], dim=1)),
         #                                pstep=self.psteps)
         # Option 2: we don't use the koopman object decoder
-        s_for_rec = _get_flat(g)
-        s_for_pred = _get_flat(G_for_pred)
+        g_all = torch.stack([g, g_rev], dim=1).reshape(self.n_directions * bs * self.n_objects, -1, g.shape[-1])
+        G_pred_all = torch.stack([G_for_pred, G_for_pred_rev], dim=1).reshape(self.n_directions * bs * self.n_objects, -1, G_for_pred.shape[-1])
+        s_for_rec = _get_flat(g_all)
+        s_for_pred = _get_flat(G_pred_all)
 
         # Convolutional decoder. Normally Spatial Broadcasting decoder
         out_rec = self.image_decoder(s_for_rec)
+        out_rec = out_rec.reshape(torch.Size([bs, self.n_objects, self.n_directions, -1]) +
+                                                        out_rec.size()[1:])
         out_pred = self.image_decoder(s_for_pred)
+        out_pred = out_pred.reshape(torch.Size([bs, self.n_objects, self.n_directions, -1]) +
+                                                        out_pred.size()[1:])
 
         returned_g = torch.cat([g, G_for_pred], dim=1)
-        returned_mus = torch.cat([f_mu], dim=-1)
-        returned_logvars = torch.cat([f_logvar], dim=-1)
+        returned_g_rev = torch.cat([g_rev, G_for_pred_rev], dim=1)
+
+        # returned_mus = torch.cat([f_mu], dim=-1)
+        returned_mus = f_mu.reshape(bs, self.n_directions, self.n_objects, *f_mu.shape[1:])
+        returned_mus = returned_mus.reshape(bs, self.n_directions, self.n_objects, -1, returned_mus.shape[-1])
+
+        # returned_logvars = torch.cat([f_logvar], dim=-1)
+        returned_logvars = f_logvar.reshape(bs, self.n_directions, self.n_objects, *f_logvar.shape[1:])
+        returned_logvars = returned_logvars.reshape(bs, self.n_directions, self.n_objects, -1, returned_logvars.shape[-1])
+
         # returned_mus = torch.cat([f_mu, a_mu], dim=-1)
         # returned_logvars = torch.cat([f_logvar, a_logvar], dim=-1)
 
-        o_touple = (out_rec, out_pred, returned_g.reshape(-1, returned_g.size(-1)),
-                    returned_mus.reshape(-1, returned_mus.size(-1)),
-                    returned_logvars.reshape(-1, returned_logvars.size(-1)))
-                    # f_mu.reshape(-1, f_mu.size(-1)),
-                    # f_logvar.reshape(-1, f_logvar.size(-1)))
-        o = [item.reshape(torch.Size([bs * self.n_objects, -1]) + item.size()[1:]) for item in o_touple]
+        o = [out_rec, out_pred,
+                    returned_g,
+                    returned_mus,
+                    returned_logvars]
+
         # Option 1: one object mapped to 0
         # shape_o0 = o[0].shape
-        # o[0] = o[0].reshape(bs, self.n_objects, *o[0].shape[1:])
+        # o[0] = o[0].reshape(bs, self.n_objects, 2, *o[0].shape[1:])
         # o[0][:,0] = o[0][:,0]*0
         # o[0] = o[0].reshape(*shape_o0)
 
-        # o[:2] = [torch.clamp(torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:]), dim=1), min=0, max=1) for item in o[:2]]
-        o[:2] = [torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:]), dim=1) for item in o[:2]]
-        o[3:5] = [item.reshape(bs, self.n_objects, *item.shape[1:]) for item in o[3:5]]
+        # o[:2] = [torch.clamp(torch.sum(item.reshape(bs, self.n_objects, self.n_directions, *item.shape[3:]), dim=1), min=0, max=1) for item in o[:2]]
+        o[:2] = [torch.sum(item.reshape(bs, self.n_objects, self.n_directions, *item.shape[3:]), dim=1) for item in o[:2]]
+        o[:2] = [item.reshape(bs * self.n_directions, *item.shape[2:]) for item in o[:2]]
 
         o.append(A)
         o.append(B)
         o.append(u.reshape(bs * self.n_objects, -1, u.shape[-1]))
-        # # Show images
-        # plt.imshow(input[0, 0, :].reshape(16, 16).cpu().detach().numpy())
-        # plt.savefig('test_attention.png')
+        o.append(returned_g_rev.reshape(bs * self.n_objects, -1, g_rev.shape[-1]))
+
         return o
 
 class ConvAttentionKoopmanModel(BaseModel):

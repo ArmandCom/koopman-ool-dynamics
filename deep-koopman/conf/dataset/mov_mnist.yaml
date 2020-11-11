@@ -4,8 +4,8 @@ n_gpu: 1
 # Global variables
 n_timesteps: &NTS 2 # Number of timesteps seen in each state. Time length of the state
 image_size: &IS [64, 64] # Input image size
-seq_length: &SeqL 10 # Length of the observed sequence.
-n_objects: &Nobj 2
+seq_length: &SeqL 8 # Length of the observed sequence.
+n_objects: &Nobj 1
 
 log_step: 50
 
@@ -16,11 +16,12 @@ arch:
   type: "RecKoopmanModel"
   args:
     in_channels: 1
-    feat_dim: &Fdim 128
-    g_dim: &Gdim 48
-    u_dim: 16
+    feat_dim: &Fdim 40
+    g_dim: &Gdim 32
+    u_dim: 32
     n_objects: *Nobj
     I_factor: 0.01
+    n_blocks: 16
     nf_particle: *Fdim
     nf_effect: *Fdim
     psteps: 1

@@ -141,7 +141,7 @@ class SimplePropagationNetwork(nn.Module):
                 self.particle_predictor, nn.Tanh()
             )
 
-    def forward(self, states, pstep):
+    def forward(self, states, psteps):
         """
         :param states: B x N x state_dim
         :param pstep: 1 or 2
@@ -151,16 +151,62 @@ class SimplePropagationNetwork(nn.Module):
         # obj_encode = self.obj_encoder(states)
         obj_encode = states
         obj_prediction = self.particle_predictor(obj_encode)
-        action_prediction = self.action_predictor(obj_encode)
+        # action_prediction = self.action_predictor(obj_encode)
+
+        # if self.output_action_dim is not None:
+        #     return obj_prediction, action_prediction
+        # else:
+        return obj_prediction
+
+class RecurrentPropagationNetwork(nn.Module):
+
+    def __init__(self, input_particle_dim, nf_particle, nf_effect, output_dim, output_action_dim = None,
+                 tanh=False, residual=False, use_gpu=False):
+
+        super(RecurrentPropagationNetwork, self).__init__()
+
+        self.use_gpu = use_gpu
+        self.residual = residual
+        self.output_action_dim = output_action_dim
+        self.output_dim = output_dim
+
+        self.particle_predictor = ParticlePredictor(input_particle_dim, nf_particle, input_particle_dim)
+        self.action_predictor = ParticlePredictor(input_particle_dim, nf_effect, output_action_dim)
+
+        # self.t_enc = nn.GRU(input_particle_dim, input_particle_dim, 2, batch_first=True)
+        # self.t_trans = nn.GRU(input_particle_dim, output_dim, 2, batch_first=True)
+        self.t_trans = nn.GRUCell(input_particle_dim, output_dim)
+        self.emission = nn.Linear(output_dim, output_dim)
+        self.emission_action = nn.Linear(output_dim, output_action_dim)
+
+        if tanh:
+            self.particle_predictor = nn.Sequential(
+                self.particle_predictor, nn.Tanh()
+            )
+
+    def forward(self, states, prev_hidden=None):
+        """
+        :param states: B x N x state_dim
+        :param pstep: 1 or 2
+        :return:
+        """
+        '''encode node'''
+        # obj_encode = self.obj_encoder(states)
+        obj_encode = states
+        # obj_encode = torch.cat([self.ini_conditions(obj_encode[:, :1]), obj_encode[:, 1:]], dim=1)
+        obj_encode = self.particle_predictor(obj_encode)
+        obj_encode = self.t_trans(obj_encode, prev_hidden)
+        obj_prediction = self.emission(obj_encode)
+        action_prediction = self.emission_action(obj_encode)
 
         if self.output_action_dim is not None:
-            return obj_prediction, action_prediction
+            return obj_prediction, obj_encode, action_prediction
         else:
-            return obj_prediction
+            return obj_prediction, obj_encode
 
 # ======================================================================================================================
 class KoopmanOperators(nn.Module, ABC):
-    def __init__(self, state_dim, nf_particle, nf_effect, g_dim, a_dim, n_timesteps, residual=False):
+    def __init__(self, state_dim, nf_particle, nf_effect, g_dim, a_dim, n_timesteps, n_blocks=1, residual=False):
         super(KoopmanOperators, self).__init__()
 
         self.residual = residual
@@ -193,10 +239,12 @@ class KoopmanOperators(nn.Module, ABC):
         # self.simulate = self.rollout_diagonal
         # self.step = self.linear_forward_diagonal
 
+        self.A_reg = torch.eye(g_dim // n_blocks).unsqueeze(0)
+
         self.system_identify = self.fit_block_diagonal
         self.simulate = self.rollout_block_diagonal
         self.step = self.linear_forward_block_diagonal
-        self.num_blocks = 4
+        self.num_blocks = n_blocks
 
     def to_s(self, gcodes, pstep):
         """ state decoder """
@@ -204,9 +252,13 @@ class KoopmanOperators(nn.Module, ABC):
         # regularize_state_Soft(states, rel_attrs, self.stat)
         return states
 
-    def to_g(self, states, pstep):
+    def to_g(self, states, psteps):
         """ state encoder """
-        return self.mapping(states=states, pstep=pstep)
+        return self.mapping(states=states, psteps=psteps)
+
+    # def to_g(self, states, hidden):
+    #     """ state encoder """
+    #     return self.mapping(states=states, prev_hidden=hidden)
 
     def fit_block_diagonal(self, G, H, U, I_factor):
 
@@ -238,6 +290,34 @@ class KoopmanOperators(nn.Module, ABC):
 
         return A, B, fit_err
 
+    def fit_block_diagonal_A(self, G, H, I_factor):
+
+        bs, T, N, D = G.size()
+
+        assert D % self.num_blocks == 0 and D % 2 == 0
+        block_size = D // self.num_blocks
+
+        G, H = G.reshape(bs, T, N, -1, block_size), H.reshape(bs, T, N, -1, block_size)
+        G, H = G.permute(0, 3, 1, 2, 4), H.permute(0, 3, 1, 2, 4)
+
+        '''B x (D) x D'''
+        A = torch.bmm(
+            self.batch_pinv(G.reshape(bs * self.num_blocks, T * N, block_size), I_factor),
+            H.reshape(bs * self.num_blocks, T * N, block_size)
+        )
+        fit_err = None
+        # A_pinv = None
+        A_pinv = self.batch_pinv(A, I_factor).reshape(bs, self.num_blocks, block_size, block_size)
+
+        # reg_mask = torch.zeros_like(A)
+        # ids = torch.arange(0, reg_mask.shape[-1])
+        # reg_mask[..., ids, ids] = 0.05
+        # A_pinv = torch.inverse(A + reg_mask).reshape(bs, self.num_blocks, block_size, block_size)
+
+        A = A.reshape(bs, self.num_blocks, block_size, block_size)
+
+        return A, A_pinv, fit_err
+
     def linear_forward_block_diagonal(self, g, u, A, B):
         """
         :param g: B x N x D
@@ -254,6 +334,19 @@ class KoopmanOperators(nn.Module, ABC):
 
         return new_g
 
+    def linear_forward_block_diagonal_no_input(self, g, A):
+        """
+        :param g: B x N x D
+        :return:
+        """
+        ''' B x N x R D '''
+        bs, dim = g.shape
+        block_size = A.shape[-2]
+        aug_g= g.reshape(-1, 1, block_size)
+
+        new_g = torch.bmm(aug_g, A.reshape(-1, block_size, block_size  )).reshape(bs, 1, dim)
+        return new_g
+
     def rollout_block_diagonal(self, g, u, T, A, B):
         """
         :param g: B x N x D
@@ -262,14 +355,18 @@ class KoopmanOperators(nn.Module, ABC):
         :return:
         """
         g_list = []
-        for t in range(T):
-            g = self.linear_forward_block_diagonal(g, u[:, t], A, B)[:, 0]  # For single object
-            g_list.append(g[:, None, :])
+        if u is not None:
+            for t in range(T):
+                g = self.linear_forward_block_diagonal(g, u[:, t], A, B)[:, 0]  # For single object
+                g_list.append(g[:, None, :])
+        else:
+            for t in range(T):
+                g = self.linear_forward_block_diagonal_no_input(g, A)[:, 0]  # For single object
+                g_list.append(g[:, None, :])
         return torch.cat(g_list, 1)
 
     @staticmethod
     def batch_pinv(x, I_factor):
-
         """
         :param x: B x N x D (N > D)
         :param I_factor:

@@ -41,6 +41,7 @@ def logvar_to_matrix_var(logvar):
     return var_mat
 
 def _clamp_diagonal(A, min, max):
+    # Note: this doesn't help. We need spectral normalization.
     eye = torch.zeros_like(A)
     ids = torch.arange(0, A.shape[-1])
     eye[..., ids, ids] = 1
@@ -147,11 +148,14 @@ class RecKoopmanModel(BaseModel):
                 prev_u_sample = torch.zeros_like(f[:, 0, :self.u_dim])
 
                 # TODO:
-                #  1: Prev_sample not necessary?
+                #  1: Prev_sample not necessary? Start from g(0)
                 #  2: Sampling from features
                 #  3: Bottleneck in f
                 #  4: Clip gradient, clip A_inv, norm of the matrix: Spectral normalization
                 #  5: Eigenvalues and Eigenvector. Fix one get the other.
+                #  6: Half of features skip the koopman embedding
+                #  7: Observation selector using Gumbel (should apply mask emissor and receptor
+                #       and it should be the same across time)
                 f_t = torch.cat([f[:, t], prev_sample], dim=-1)
                 g = self.koopman.to_g(f_t, self.psteps)
                 # g = self.initial_conditions(f[:, t])
@@ -199,8 +203,8 @@ class RecKoopmanModel(BaseModel):
             G_tilde = g[:, 1:-1, None]  # new axis corresponding to N number of objects
             H_tilde = g[:, 2:, None]
 
-        A, B, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[:, 1:-1], I_factor=self.I_factor)
-        # A = _clamp_diagonal(A, 0.8, 1.2)
+        # A, B, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[:, 1:-1], I_factor=self.I_factor)
+        A, B, fit_err = self.koopman.fit_with_A(G=G_tilde, H=H_tilde, U=u[:, 1:-1], I_factor=self.I_factor)
 
         # A, A_pinv, fit_err = self.koopman.fit_block_diagonal_A(G=G_tilde, H=H_tilde, I_factor=self.I_factor)
         # TODO: Try simulating backwards

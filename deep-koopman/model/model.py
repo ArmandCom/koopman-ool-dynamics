@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-# import torch.nn.functional as F
+import torch.nn.functional as F
 import numpy as np
 from base import BaseModel
 # from model.networks import ImageEncoder, SBImageDecoder, SimpleSBImageDecoder, \
@@ -40,6 +40,40 @@ def logvar_to_matrix_var(logvar):
     var_mat = torch.diag_embed(var)
     return var_mat
 
+def _clamp_diagonal(A, min, max):
+    eye = torch.zeros_like(A)
+    ids = torch.arange(0, A.shape[-1])
+    eye[..., ids, ids] = 1
+    return A*(1-eye) + torch.clamp(A * eye, min, max)
+
+'''Gumble sampling'''
+# def _sample_gumbel(logits, eps=1e-20):
+#     # U = torch.rand(shape).cuda()
+#     U = torch.rand_like(logits)
+#     return -Variable(torch.log(-torch.log(U + eps) + eps))
+#
+# def _gumbel_softmax_sample(logits, temperature):
+#     # y = logits + _sample_gumbel(logits.size())
+#     y = logits + _sample_gumbel(logits)
+#     return F.softmax(y / temperature, dim=-1)
+#
+# def _gumbel_softmax(logits, temperature=1):
+#     """
+#     ST-gumple-softmax
+#     input: [*, n_class]
+#     return: flatten --> [*, n_class] an one-hot vector
+#     """
+#     latent_dim = logits.shape[-1]//2
+#     y = _gumbel_softmax_sample(logits, temperature)
+#     shape = y.size()
+#     _, ind = y.max(dim=-1)
+#     y_hard = torch.zeros_like(y).view(-1, shape[-1])
+#     y_hard.scatter_(1, ind.view(-1, 1), 1)
+#     y_hard = y_hard.view(*shape)
+#     y_hard = (y_hard - y).detach() + y
+#     return y_hard.view(-1,latent_dim*2)
+
+
 class RecKoopmanModel(BaseModel):
     def __init__(self, in_channels, feat_dim, nf_particle, nf_effect, g_dim, u_dim,
                  n_objects, I_factor=10, n_blocks=1, psteps=1, n_timesteps=1, ngf=8, image_size=[64, 64]):
@@ -68,10 +102,10 @@ class RecKoopmanModel(BaseModel):
         self.sigmoid = nn.Sigmoid()
 
         self.linear_g = nn.Linear(g_dim, g_dim)
-        self.linear_u = nn.Linear(g_dim, u_dim)
-        self.initial_conditions = nn.Sequential(nn.Linear(feat_dim * n_timesteps * 2, feat_dim * n_timesteps),
-                                                nn.ReLU(),
-                                                nn.Linear(feat_dim * n_timesteps, g_dim * 2))
+        self.linear_u = nn.Linear(g_dim + u_dim, u_dim*2)
+        # self.initial_conditions = nn.Sequential(nn.Linear(feat_dim * n_timesteps * 2, feat_dim * n_timesteps),
+        #                                         nn.ReLU(),
+        #                                         nn.Linear(feat_dim * n_timesteps, g_dim * 2))
 
         self.image_encoder = ImageEncoder(in_channels, feat_dim * 2, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
         self.image_decoder = ImageDecoder(g_dim, out_channels, ngf, n_layers)
@@ -102,42 +136,48 @@ class RecKoopmanModel(BaseModel):
         f = self.image_encoder(input)
         # Concatenates the features from current time and previous to create full state
         f, T = self._get_full_state(f, T)
-        # TODO: Might be bug. I'm reshaping with objects before T.
+
         f = f.view(torch.Size([bs * self.n_objects, T]) + f.size()[1:])
 
-        f_mu, f_logvar, a_mu, a_logvar = [], [], [], []
+        f_mu, f_logvar, u_dist = [], [], []
         gs, us = [], []
         for t in range(T):
             if t==0:
                 prev_sample = torch.zeros_like(f[:, 0, :self.g_dim])
+                prev_u_sample = torch.zeros_like(f[:, 0, :self.u_dim])
+
+                # TODO:
+                #  1: Prev_sample not necessary?
+                #  2: Sampling from features
+                #  3: Bottleneck in f
+                #  4: Clip gradient, clip A_inv, norm of the matrix: Spectral normalization
+                #  5: Eigenvalues and Eigenvector. Fix one get the other.
                 f_t = torch.cat([f[:, t], prev_sample], dim=-1)
                 g = self.koopman.to_g(f_t, self.psteps)
                 # g = self.initial_conditions(f[:, t])
             else:
                 f_t = torch.cat([f[:, t], prev_sample], dim=-1)
                 g = self.koopman.to_g(f_t, self.psteps)
-                # TODO: provar recurrent, suposo
                 # g, prev_hidden, u = self.koopman.to_g(f_t, prev_hidden) #,psteps=self.psteps
+
             g_mu, g_logvar = torch.chunk(g, 2, dim=-1)
             g = _sample_latent_simple(g_mu, g_logvar)
+            g, q_y = self.linear_g(g), F.relu(self.linear_u(torch.cat([g, prev_u_sample], dim=-1)))
 
-            # if t < T-1:
-            #     u_mu, u_logvar = torch.chunk(u, 2, dim=-1)
-            #     u = _sample_latent_simple(u_mu, u_logvar)
-            # else:
-            #     u_mu, u_logvar = torch.chunk(torch.zeros_like(u), 2, dim=-1)
-            #     u = u_mu
-            # g, u = self.linear_g(g), self.sigmoid(self.linear_u(u))
-            g, u = self.linear_g(g), self.sigmoid(self.linear_u(g))
+            q_y = q_y.view(q_y.size(0),self.u_dim,2)
+            u = F.gumbel_softmax(q_y, tau=1, hard=True)
+            u = u[..., 0]
+            # u = torch.zeros_like(u_active) + torch.ones_like(u_active)*u_active
+            # u = _gumbel_softmax(q_y).reshape(*q_y.shape)
 
-            prev_sample = g
-
+            prev_sample, prev_u_sample = g, u
             gs.append(g)
             us.append(u)
 
             f_mu.append(g_mu)
             f_logvar.append(g_logvar)
-            # a_mu.append(u_mu)
+
+            u_dist.append(q_y)
             # a_logvar.append(u_logvar)
 
         g = torch.stack(gs, dim=1)
@@ -145,6 +185,7 @@ class RecKoopmanModel(BaseModel):
         f_logvar = torch.stack(f_logvar, dim=1)
 
         u = torch.stack(us, dim=1)
+        u_dist = torch.stack(u_dist, dim=1)
         # u_zeros = torch.zeros_likes_like(u)
         # u = torch.where(u > 0.8, u, u_zeros)
         # a_mu = torch.stack(a_mu, dim=1)
@@ -159,7 +200,7 @@ class RecKoopmanModel(BaseModel):
             H_tilde = g[:, 2:, None]
 
         A, B, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[:, 1:-1], I_factor=self.I_factor)
-        # TODO: clamp A before invert. Threshold u over 0.9
+        # A = _clamp_diagonal(A, 0.8, 1.2)
 
         # A, A_pinv, fit_err = self.koopman.fit_block_diagonal_A(G=G_tilde, H=H_tilde, I_factor=self.I_factor)
         # TODO: Try simulating backwards
@@ -213,6 +254,7 @@ class RecKoopmanModel(BaseModel):
         o.append(A)
         o.append(B)
         o.append(u.reshape(bs * self.n_objects, -1, u.shape[-1]))
+        o.append(u_dist)#.reshape(bs * self.n_objects, -1, u_dist.shape[-1]))
         # # Show images
         # plt.imshow(input[0, 0, :].reshape(16, 16).cpu().detach().numpy())
         # plt.savefig('test_attention.png')

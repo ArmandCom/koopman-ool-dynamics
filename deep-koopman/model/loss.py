@@ -101,9 +101,24 @@ def embedding_loss(output, target, lambd=0.3):
 
     rec, pred, g, mu, logvar, A, _, u = output[0], output[1], output[2], output[3], \
                                                output[4], output[5], output[6], output[7]
+    qy = output[8]
 
     '''Simple KL loss for reconstruction'''
     kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(dim=-1).mean()#.sum(dim=1)
+    '''Discrete input'''
+    # Option 1:
+    # log_qy = torch.log(qy+1e-20)
+    # g = Variable(torch.log(torch.Tensor([1.0/2])).cuda())
+    # kl_loss_gumb = torch.sum(qy*(log_qy - g),dim=-1).mean()
+    # Option 2:
+    # kl_loss_gumb = - torch.sum(qy*torch.log(qy + 1e-6))
+    # Option 3:
+    log_ratio = torch.log(qy * 2 + 1e-10)
+    # TODO: reshape for objects and sum them out?
+    # TODO: are we imposing all classes have the same probability?
+    # TODO: Take the time to understand Gumbel
+    kl_loss_gumb = torch.sum(qy * log_ratio, dim=-1).mean()
+    kl_loss = kl_loss + kl_loss_gumb
 
     ''' KL loss for prediction:
         Computation of the KL divergence for non-diagonal Sigmas'''
@@ -131,9 +146,19 @@ def embedding_loss(output, target, lambd=0.3):
     '''Desired A loss'''
     loss_A = diagonal_loss(A)
 
-    '''Input sparsity loss'''
-    l1_u = 2 * (l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean() -
-           mse_loss(u, torch.ones_like(u)*0.5).sum(-1).sum(-1).mean())
+    '''Input sparsity loss
+        u: [bs, T, feat_dim]
+    '''
+    # Option 1: If activations are not binary,
+    #  penalize them being activated + being close to 0.5
+    # l1_u = 2 * (l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean() -
+    #        mse_loss(u, torch.ones_like(u)*0.5).sum(-1).sum(-1).mean())
+    # Option 2: Penalize activations
+    # l1_u = l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
+    # Option 3: Penalize if a specific dimension has a single activation in it,
+    #  but it doesn't matter how many timesteps.
+    u_max, _ = torch.max(u, dim=1)
+    l1_u = 5 * l1_loss(u_max, torch.zeros_like(u_max)).sum(-1).mean()
 
     '''Rec and pred losses'''
     rec_loss = 10 * mse_loss(rec, target[:, -rec.shape[1]:]) \

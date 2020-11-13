@@ -134,7 +134,7 @@ class SimplePropagationNetwork(nn.Module):
         self.output_action_dim = output_action_dim
 
         self.particle_predictor = ParticlePredictor(input_particle_dim, nf_particle, output_dim)
-        self.action_predictor = ParticlePredictor(input_particle_dim, nf_effect, output_action_dim)
+        # self.action_predictor = ParticlePredictor(input_particle_dim, nf_effect, output_action_dim)
 
         if tanh:
             self.particle_predictor = nn.Sequential(
@@ -206,28 +206,28 @@ class RecurrentPropagationNetwork(nn.Module):
 
 # ======================================================================================================================
 class KoopmanOperators(nn.Module, ABC):
-    def __init__(self, state_dim, nf_particle, nf_effect, g_dim, a_dim, n_timesteps, n_blocks=1, residual=False):
+    def __init__(self, state_dim, nf_particle, nf_effect, g_dim, u_dim, n_timesteps, n_blocks=1, residual=False):
         super(KoopmanOperators, self).__init__()
 
         self.residual = residual
 
         ''' state '''
         # Note: True? we should not include action in state encoder
-        input_particle_dim = state_dim * n_timesteps + g_dim #TODO: g_dim added for recursive sampling
+        input_particle_dim = state_dim * n_timesteps #+ g_dim #TODO: g_dim added for recursive sampling
 
         self.mapping = SimplePropagationNetwork(
             input_particle_dim=input_particle_dim, nf_particle=nf_particle,
-            nf_effect=nf_effect, output_dim=g_dim * 2, output_action_dim = a_dim * 2, tanh=False,  # use tanh to enforce the shape of the code space
-            residual=residual)
+            nf_effect=nf_effect, output_dim=g_dim, output_action_dim = u_dim, tanh=False,  # use tanh to enforce the shape of the code space
+            residual=residual) # g * 2
 
         # the state for decoding phase is replaced with code of g_dim
         input_particle_dim = g_dim
 
         # print('state_decoder', 'node', input_particle_dim, 'edge', input_relation_dim)
 
-        # self.inv_mapping = SimplePropagationNetwork(
-        #     input_particle_dim=input_particle_dim, nf_particle=nf_particle,
-        #     nf_effect=nf_effect, output_dim=state_dim, tanh=False, residual=residual)
+        self.inv_mapping = SimplePropagationNetwork(
+            input_particle_dim=input_particle_dim, nf_particle=nf_particle,
+            nf_effect=nf_effect, output_dim=state_dim, tanh=False, residual=residual)
 
         ''' dynamical system coefficient: A'''
 
@@ -235,22 +235,20 @@ class KoopmanOperators(nn.Module, ABC):
         # self.simulate = self.rollout
         # self.step = self.linear_forward
 
-        # self.system_identify = self.fit_diagonal
-        # self.simulate = self.rollout_diagonal
-        # self.step = self.linear_forward_diagonal
-
         self.A_reg = torch.eye(g_dim // n_blocks).unsqueeze(0)
         self.A = nn.Parameter(torch.ones(1, 1, n_blocks, g_dim // n_blocks, g_dim // n_blocks)
                               / (g_dim // n_blocks))
+        # self.B = nn.Parameter(torch.ones(1, n_blocks, u_dim // n_blocks, g_dim // n_blocks)
+        #                       / (g_dim // n_blocks))
 
         self.system_identify = self.fit_block_diagonal
         self.simulate = self.rollout_block_diagonal
         self.step = self.linear_forward_block_diagonal
         self.num_blocks = n_blocks
 
-    def to_s(self, gcodes, pstep):
+    def to_s(self, gcodes, psteps):
         """ state decoder """
-        states = self.inv_mapping(states=gcodes, pstep=pstep)
+        states = self.inv_mapping(states=gcodes, psteps=psteps)
         # regularize_state_Soft(states, rel_attrs, self.stat)
         return states
 
@@ -268,7 +266,7 @@ class KoopmanOperators(nn.Module, ABC):
         a_dim = U.shape[-1]
 
         assert D % self.num_blocks == 0 and D % 2 == 0 and \
-               a_dim % self.num_blocks == 0 and a_dim % 2 == 0
+               a_dim % self.num_blocks == 0
         block_size = D // self.num_blocks
         a_block_size = a_dim // self.num_blocks
 
@@ -298,7 +296,7 @@ class KoopmanOperators(nn.Module, ABC):
         a_dim = U.shape[-1]
 
         assert D % self.num_blocks == 0 and D % 2 == 0 and \
-               a_dim % self.num_blocks == 0 and a_dim % 2 == 0
+               a_dim % self.num_blocks == 0
         block_size = D // self.num_blocks
         a_block_size = a_dim // self.num_blocks
 
@@ -325,6 +323,14 @@ class KoopmanOperators(nn.Module, ABC):
         # fit_err = torch.sqrt((fit_err ** 2).mean())
 
         return A[:,0], B, fit_err
+
+    def fit_with_AB(self):
+        A = self.A
+        B = self.B
+        # fit_err = H.reshape(bs, T * N, D) - torch.bmm(GU, AB)
+        # fit_err = torch.sqrt((fit_err ** 2).mean())
+
+        return A[:,0], B
 
     def fit_block_diagonal_A(self, G, H, I_factor):
 

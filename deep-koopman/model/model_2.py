@@ -102,19 +102,16 @@ class RecKoopmanModel(BaseModel):
         self.softmax = nn.Softmax(dim=-1)
         self.sigmoid = nn.Sigmoid()
 
+        feat_dyn_dim = feat_dim #// 8
         self.linear_g = nn.Linear(g_dim, g_dim)
-        self.linear_u = nn.Linear(g_dim + u_dim, u_dim*2)
+        self.linear_u = nn.Linear(g_dim + u_dim, u_dim * 2)
         # self.initial_conditions = nn.Sequential(nn.Linear(feat_dim * n_timesteps * 2, feat_dim * n_timesteps),
         #                                         nn.ReLU(),
         #                                         nn.Linear(feat_dim * n_timesteps, g_dim * 2))
 
-        self.image_encoder = ImageEncoder(in_channels, feat_dim * 2, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
-        self.image_decoder = ImageDecoder(g_dim, out_channels, ngf, n_layers)
-        self.koopman = KoopmanOperators(feat_dim * 2, nf_particle * 2, nf_effect * 2, g_dim, u_dim, n_timesteps, n_blocks)
-
-        #Object attention:
-        # if n_objects > 1:
-        #     self.obj_attention = ObjectAttention(in_channels, feat_dim, n_objects)
+        self.image_encoder = ImageEncoder(in_channels, feat_dim, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
+        self.image_decoder = ImageDecoder(feat_dyn_dim, out_channels, ngf, n_layers)
+        self.koopman = KoopmanOperators(feat_dim, nf_particle, nf_effect, g_dim, u_dim, n_timesteps, n_blocks)
 
     def _get_full_state(self, x, T):
 
@@ -144,21 +141,25 @@ class RecKoopmanModel(BaseModel):
         gs, us = [], []
         for t in range(T):
             if t==0:
-                prev_sample = torch.zeros_like(f[:, 0, :self.g_dim])
+                prev_sample = torch.zeros_like(f[:, 0, :1].repeat(1, self.g_dim))
                 prev_u_sample = torch.zeros_like(f[:, 0, :self.u_dim])
 
                 # TODO:
                 #  1: Prev_sample not necessary? Start from g(0)
                 #  2: Sampling from features
-                #  3: Bottleneck in f
+                #  3: Bottleneck in f. Smaller than G. Constant part is big and routed directly.
+                #       Variant part is very small and expanded to G.
                 #  4: Clip gradient, clip A_inv, norm of the matrix: Spectral normalization
                 #  5: Eigenvalues and Eigenvector. Fix one get the other.
                 #  6: Half of features skip the koopman embedding
                 #  7: Observation selector using Gumbel (should apply mask emissor and receptor
                 #       and it should be the same across time)
+                #  8: Should I write the conversation with Sandesh?
+                #  Finally, check compositional koopman implementation
+
+                # f_t = self.initial_conditions(f[:, t])
                 f_t = torch.cat([f[:, t], prev_sample], dim=-1)
                 g = self.koopman.to_g(f_t, self.psteps)
-                # g = self.initial_conditions(f[:, t])
             else:
                 f_t = torch.cat([f[:, t], prev_sample], dim=-1)
                 g = self.koopman.to_g(f_t, self.psteps)
@@ -171,8 +172,6 @@ class RecKoopmanModel(BaseModel):
             q_y = q_y.view(q_y.size(0),self.u_dim,2)
             u = F.gumbel_softmax(q_y, tau=1, hard=True)
             u = u[..., 0]
-            # u = torch.zeros_like(u_active) + torch.ones_like(u_active)*u_active
-            # u = _gumbel_softmax(q_y).reshape(*q_y.shape)
 
             prev_sample, prev_u_sample = g, u
             gs.append(g)
@@ -182,7 +181,6 @@ class RecKoopmanModel(BaseModel):
             f_logvar.append(g_logvar)
 
             u_dist.append(q_y)
-            # a_logvar.append(u_logvar)
 
         g = torch.stack(gs, dim=1)
         f_mu = torch.stack(f_mu, dim=1)
@@ -190,10 +188,6 @@ class RecKoopmanModel(BaseModel):
 
         u = torch.stack(us, dim=1)
         u_dist = torch.stack(u_dist, dim=1)
-        # u_zeros = torch.zeros_likes_like(u)
-        # u = torch.where(u > 0.8, u, u_zeros)
-        # a_mu = torch.stack(a_mu, dim=1)
-        # a_logvar = torch.stack(a_logvar, dim=1)
 
         free_pred = 0
         if free_pred > 0:
@@ -221,13 +215,14 @@ class RecKoopmanModel(BaseModel):
 
 
         # Option 1: use the koopman object decoder
-        # s_for_rec = self.koopman.to_s(gcodes=_get_flat(g),
-        #                               pstep=self.psteps)
-        # s_for_pred = self.koopman.to_s(gcodes=_get_flat(torch.cat([g[:, :1],G_for_pred], dim=1)),
-        #                                pstep=self.psteps)
+        s_for_rec = self.koopman.to_s(gcodes=_get_flat(g),
+                                      psteps=self.psteps)
+        # torch.cat([g[:, :1],G_for_pred], dim=1)
+        s_for_pred = self.koopman.to_s(gcodes=_get_flat(G_for_pred),
+                                       psteps=self.psteps)
         # Option 2: we don't use the koopman object decoder
-        s_for_rec = _get_flat(g)
-        s_for_pred = _get_flat(G_for_pred)
+        # s_for_rec = _get_flat(g)
+        # s_for_pred = _get_flat(G_for_pred)
 
         # Convolutional decoder. Normally Spatial Broadcasting decoder
         out_rec = self.image_decoder(s_for_rec)

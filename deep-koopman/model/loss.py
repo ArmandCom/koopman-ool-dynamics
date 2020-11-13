@@ -99,9 +99,9 @@ def embedding_loss_bidir(output, target, lambd=0.3):
 def embedding_loss(output, target, lambd=0.3):
     # assert len(output) == 3 or len(output) == 5
 
-    rec, pred, g, mu, logvar, A, _, u = output[0], output[1], output[2], output[3], \
-                                               output[4], output[5], output[6], output[7]
-    qy = output[8]
+    rec, pred, g, mu, logvar, A, _, u, qy = output[0], output[1], output[2], output[3], \
+                                               output[4], output[5], output[6], \
+                                                output[7], output[8]
 
     '''Simple KL loss for reconstruction'''
     kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(dim=-1).mean()#.sum(dim=1)
@@ -113,7 +113,8 @@ def embedding_loss(output, target, lambd=0.3):
     # Option 2:
     # kl_loss_gumb = - torch.sum(qy*torch.log(qy + 1e-6))
     # Option 3:
-    log_ratio = torch.log(qy * 2 + 1e-10)
+    n_cat = qy.shape[-1]
+    log_ratio = torch.log(qy * n_cat + 1e-10)
     # TODO: reshape for objects and sum them out?
     # TODO: are we imposing all classes have the same probability?
     # TODO: Take the time to understand Gumbel
@@ -154,11 +155,11 @@ def embedding_loss(output, target, lambd=0.3):
     # l1_u = 2 * (l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean() -
     #        mse_loss(u, torch.ones_like(u)*0.5).sum(-1).sum(-1).mean())
     # Option 2: Penalize activations
-    # l1_u = l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
+    l1_u = l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
     # Option 3: Penalize if a specific dimension has a single activation in it,
     #  but it doesn't matter how many timesteps.
-    u_max, _ = torch.max(u, dim=1)
-    l1_u = 5 * l1_loss(u_max, torch.zeros_like(u_max)).sum(-1).mean()
+    # u_max, _ = torch.max(u, dim=1)
+    # l1_u = 50 * l1_loss(u_max, torch.zeros_like(u_max)).sum(-1).mean()
 
     '''Rec and pred losses'''
     rec_loss = 10 * mse_loss(rec, target[:, -rec.shape[1]:]) \

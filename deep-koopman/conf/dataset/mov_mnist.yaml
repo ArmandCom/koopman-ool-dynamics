@@ -4,7 +4,7 @@ n_gpu: 1
 # Global variables
 n_timesteps: &NTS 2 # Number of timesteps seen in each state. Time length of the state
 image_size: &IS [64, 64] # Input image size
-seq_length: &SeqL 8 # Length of the observed sequence.
+seq_length: &SeqL 10 # Length of the observed sequence.
 n_objects: &Nobj 1
 
 log_step: 50
@@ -17,11 +17,11 @@ arch:
   args:
     in_channels: 1
     feat_dim: &Fdim 30
-    g_dim: &Gdim 16
-    u_dim: 1
+    g_dim: &Gdim 12
+    u_dim: 4
     n_objects: *Nobj
     I_factor: 0.01
-    n_blocks: 1
+    n_blocks: 4
     nf_particle: &Hdim 20
     nf_effect: *Hdim
     psteps: 1

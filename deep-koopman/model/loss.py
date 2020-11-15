@@ -155,7 +155,7 @@ def embedding_loss(output, target, lambd=0.3):
     # l1_u = 2 * (l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean() -
     #        mse_loss(u, torch.ones_like(u)*0.5).sum(-1).sum(-1).mean())
     # Option 2: Penalize activations
-    l1_u = l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
+    l1_u = 3 * l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
     # Option 3: Penalize if a specific dimension has a single activation in it,
     #  but it doesn't matter how many timesteps.
     # u_max, _ = torch.max(u, dim=1)

@@ -238,8 +238,8 @@ class KoopmanOperators(nn.Module, ABC):
         self.A_reg = torch.eye(g_dim // n_blocks).unsqueeze(0)
         self.A = nn.Parameter(torch.ones(1, 1, n_blocks, g_dim // n_blocks, g_dim // n_blocks)
                               / (g_dim // n_blocks))
-        # self.B = nn.Parameter(torch.ones(1, n_blocks, u_dim // n_blocks, g_dim // n_blocks)
-        #                       / (g_dim // n_blocks))
+        self.B = nn.Parameter(torch.ones(1, 1, n_blocks, u_dim // n_blocks, g_dim // n_blocks)
+                              / (g_dim // n_blocks))
 
         self.system_identify = self.fit_block_diagonal
         self.simulate = self.rollout_block_diagonal
@@ -313,24 +313,60 @@ class KoopmanOperators(nn.Module, ABC):
         # GU = torch.cat([G, U], -1)
         '''B x (D) x D'''
 
-        res = H - H_prime
+        # res = H - H_prime
         B = torch.bmm(self.batch_pinv(U.reshape(bs * self.num_blocks, T * N, a_block_size), I_factor),
                       res.reshape(bs * self.num_blocks, T * N, block_size)
                       )
 
+        B = B.reshape(bs, self.num_blocks, a_block_size, block_size)
         fit_err = 0
         # fit_err = H.reshape(bs, T * N, D) - torch.bmm(GU, AB)
         # fit_err = torch.sqrt((fit_err ** 2).mean())
 
         return A[:,0], B, fit_err
 
-    def fit_with_AB(self):
-        A = self.A
-        B = self.B
+    def fit_with_B(self, G, H, U, I_factor):
+
+        bs, T, N, D = G.size()
+        a_dim = U.shape[-1]
+
+        assert D % self.num_blocks == 0 and D % 2 == 0 and \
+               a_dim % self.num_blocks == 0
+        block_size = D // self.num_blocks
+        a_block_size = a_dim // self.num_blocks
+
+        B = self.B.repeat(bs, T, 1, 1, 1)
+        action = torch.bmm(U.reshape(-1, 1, a_block_size), B.reshape(-1, a_block_size, block_size  )).reshape(bs, T, N, D)
+        res = H - action
+        res, G = res.reshape(bs, T, N, -1, block_size), \
+                 G.reshape(bs, T, N, -1, block_size)
+        res, G = res.permute(0, 3, 1, 2, 4), G.permute(0, 3, 1, 2, 4)
+
+
+        # G = G.reshape(bs, T, N, -1, block_size)
+        # G = G.permute(0, 3, 1, 2, 4)
+
+        # GU = torch.cat([G, U], -1)
+        '''B x (D) x D'''
+
+        A = torch.bmm(self.batch_pinv(G.reshape(bs * self.num_blocks, T * N, block_size), I_factor),
+                      res.reshape(bs * self.num_blocks, T * N, block_size)
+                      )
+
+        A = A.reshape(bs, self.num_blocks, block_size, block_size)
+        fit_err = 0
         # fit_err = H.reshape(bs, T * N, D) - torch.bmm(GU, AB)
         # fit_err = torch.sqrt((fit_err ** 2).mean())
 
-        return A[:,0], B
+        return A, B[:,0], fit_err
+
+    def fit_with_AB(self, bs):
+        A = self.A.repeat(bs, 1, 1, 1, 1)
+        B = self.B.repeat(bs, 1, 1, 1, 1)
+        # fit_err = H.reshape(bs, T * N, D) - torch.bmm(GU, AB)
+        # fit_err = torch.sqrt((fit_err ** 2).mean())
+
+        return A[:,0], B[:,0]
 
     def fit_block_diagonal_A(self, G, H, I_factor):
 

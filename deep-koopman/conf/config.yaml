@@ -2,6 +2,6 @@ defaults:
   - dataset: mov_mnist
 #  - dataset: dsprites
 
-#resume: '/home/acomasma/ool-dynamics/deep-koopman/outputs/test_1/Koopman_Disentanglement/models/checkpoint-epoch24.pth'
+resume: #'/home/acomasma/ool-dynamics/deep-koopman/outputs/test_1/Koopman_Disentanglement/models/checkpoint-epoch24.pth'
 device:
 run_id:

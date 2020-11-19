@@ -53,6 +53,7 @@ class Trainer(BaseTrainer):
             output = self.model(data)
             loss, loss_particles = self.criterion(output, target, lambd=self.config["trainer"]["lambd"])
             loss.backward()
+            # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1000)
             self.optimizer.step()
 
             self.writer.set_step((epoch - 1) * self.len_epoch + batch_idx)

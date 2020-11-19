@@ -18,6 +18,16 @@ import matplotlib.pyplot as plt
     This way we only need to control a reduced amount of dimensions - and we can make them variable.
     The constant factors can also work as a padding for the dimensionality to remain constant. '''
 
+#Note: preguntes Octavia:
+# Can we minimize hankel rank including input?
+# I can't manage to correctly predict u. How should it look like?
+# Lack of intuition with koopman. Should the same matrix apply to all?
+#   Different directions use the same matrix or the inverse.
+#   If it's the same, it means the matrix is orthogonal. Is it also symmetric?
+# We have successfully separated the constant from the varying content and objects from each other.
+# I have the poster for DIVE
+# Idea
+
 def _get_flat(x, keep_dim=False):
     if keep_dim:
         return x.reshape(torch.Size([1, x.size(0) * x.size(1)]) + x.size()[2:])
@@ -111,14 +121,20 @@ class RecKoopmanModel(BaseModel):
 
         feat_dyn_dim = feat_dim // 6
         self.feat_dyn_dim = feat_dyn_dim
+        self.content = None
+        self.reverse = False
+        self.hankel = True
 
         # self.linear_u = nn.Linear(g_dim + u_dim, u_dim * 2)
         # self.linear_u_2_f = nn.Linear(feat_dyn_dim * n_timesteps, u_dim * 2)
-        self.linear_u_2_g = nn.Linear(g_dim, u_dim * 2)
         # self.linear_u_T_f = nn.Linear(feat_dyn_dim * n_timesteps, u_dim)
 
-        self.content = None
-        self.reverse = True
+        if self.hankel:
+            self.linear_u_2_g = nn.Linear(g_dim * self.n_timesteps, u_dim * 2)
+        else:
+            self.linear_u_2_g = nn.Linear(g_dim, u_dim * 2)
+
+
 
         self.linear_f_mu = nn.Linear(feat_dim * 2, feat_dim)
         self.linear_f_logvar = nn.Linear(feat_dim * 2, feat_dim)
@@ -141,6 +157,27 @@ class RecKoopmanModel(BaseModel):
         new_x = torch.stack(new_x, dim=1)
         return new_x.reshape(-1, new_x.shape[-1]), new_T
 
+    def _get_full_state_hankel(self, x, T):
+        '''
+        :param x: features or observations
+        :param T: number of time-steps before concatenation
+        :return: Columns of a hankel matrix with self.n_timesteps rows.
+        '''
+        if self.n_timesteps < 2:
+            return x, T
+        new_T = T - self.n_timesteps + 1
+
+        x = x.reshape(-1, T, *x.shape[2:])
+        new_x = []
+        for t in range(new_T):
+            new_x.append(torch.stack([x[:, t + idx]
+                                    for idx in range(self.n_timesteps)], dim=-1))
+        # torch.cat([ torch.zeros_like( , x[:,0,0:1]) + self.t_grid[idx]], dim=-1)
+        new_x = torch.stack(new_x, dim=1)
+
+        return new_x.reshape(-1, new_T, new_x.shape[-2] * new_x.shape[-1]), new_T
+
+
     def forward(self, input):
         bs, T, ch, h, w = input.shape
         (n_dirs, bs) = (2, 2*bs) if self.reverse else (1, bs)
@@ -162,10 +199,15 @@ class RecKoopmanModel(BaseModel):
 
         f = f_dyn
         f = f.reshape(bs * self.n_objects * T, -1)
-        f, T = self._get_full_state(f, T)
+
+        if not self.hankel:
+            f, T = self._get_full_state(f, T)
 
         g = self.koopman.to_g(f, self.psteps)
         g = g.reshape(bs * self.n_objects, T, *g.shape[1:])
+
+        if self.hankel:
+            g, T = self._get_full_state_hankel(g, T)
 
         if self.reverse:
             bs = bs//n_dirs
@@ -175,10 +217,19 @@ class RecKoopmanModel(BaseModel):
             g = g_bw
 
         # Option 1: All time-steps can be activated
-        u_dist = F.relu(self.linear_u_2_g(g.reshape(bs * self.n_objects * T, *g.shape[2:])))
+        u_dist = F.relu(self.linear_u_2_g(g.reshape(bs * self.n_objects * T, g.shape[-1])))
         u_dist = u_dist.reshape(u_dist.size(0),self.u_dim,2)
-        u = F.gumbel_softmax(u_dist, tau=1, hard=True)
+        u = F.gumbel_softmax(u_dist, tau=0.2, hard=True)
         u = u[..., 0].reshape(-1, T, self.u_dim)
+
+        if self.hankel:
+            zero_pad = torch.zeros_like(u[:, :self.n_timesteps-1])
+            u = torch.cat([zero_pad, u], dim=1)
+            u, T_u = self._get_full_state_hankel(u, T+self.n_timesteps-1)
+            # Option 2: single B for all u
+            # u = u.sum(-1)[..., None]
+            assert T_u == T
+
         # Option 2: One activation for all time-steps. Too strong of an assumption.
         # u_dist = F.relu(self.linear_u_T(f))
         # u_dist = u_dist.reshape(-1, T, self.u_dim).permute(0, 2, 1)
@@ -201,8 +252,12 @@ class RecKoopmanModel(BaseModel):
         # u_dist = torch.stack(u_dist, dim=1)
 
         # TODO:
+        #  0: state as velocity acceleration, pose
+        #  0: g fitting error.
+        #  0: Hankel view. Fuck koopman for now, it has too many degrees of freedom. Restar input para minimizar rango de H.
         #  1: Invert or Sample randomly u and maximize the error in reconstruction.
-        #  2: We don't impose A symmetric, but we impose that g in both directions use the same A and B.
+        #  2: Treat n_timesteps with conv_nn? Or does it make sense to mix f1(t) and f2(t-1)?
+        #  3: We don't impose A symmetric, but we impose that g in both directions use the same A and B.
         #       Explode symmetry. If there's input in the a sequence, there will be the same input in the reverse sequence.
         #       B is valid for both. Then we cant cross, unless we recalculate B. It might not be necessary because we use
         #       the same A for both dirs. INVERT U's temporally --> that's a great idea. Dismiss (n_ini_timesteps - 1 samples) in each extreme Is this correct?
@@ -212,6 +267,7 @@ class RecKoopmanModel(BaseModel):
         #  6: Observation selector using Gumbel (should apply mask emissor and receptor
         #       and it should be the same across time)
         #  7: Attention mechanism to select - koopman (sub-koopman) / Identity. It will be useful for the future.
+        #  8: When works, formalize code. Hyperparameters through config.yaml
         # 1: Prev_sample not necessary? Start from g(0)
         # 2: Sampling from features
         # 3: Bottleneck in f. Smaller than G. Constant part is big and routed directly.
@@ -219,29 +275,27 @@ class RecKoopmanModel(BaseModel):
         # 4: In evaluation, sample features several times but only keep one of the cte. Check if it captures the appearance
         # 5: Fix B with A learned. If the first doesn't require input, B will be mapped to 0.
 
-        randperm = torch.arange(g.shape[0])  if self.reverse else torch.randperm(g.shape[0])
+        randperm = torch.arange(g.shape[0])  if self.reverse and True else torch.randperm(g.shape[0])
 
-        #Note: IMPORTANT! Inverting u(t) time axis directly only works for n_steps = 2.
-        # There is a 1-shift equivalence between observations and 1-shift equivalence when it comes to input action
-        # (timesteps before and after the action happens). 
-        # If n_timesteps = 3: u_rev = [0] cat [u(rev_idx)[:-1]], if n_timesteps = 2: u_rev = [0 0] cat [u(rev_idx)[:-2]]
-        # Does skipping the last u in skipping affect the previous mapping?
+        #Note: Inverting u(t) in the time axis
         if self.reverse:
             u_fw = u
+            zeros = torch.zeros_like(u[:, :self.n_timesteps])
             u_bw = torch.flip(u, dims=[1])
+            u_bw = torch.cat([u_bw[:, self.n_timesteps:], zeros], dim=1)
             u = u_bw
 
-        free_pred = 0
+        free_pred = self.n_timesteps - 1 + 4
         if free_pred > 0:
-            G_tilde = g[randperm, :-1-free_pred, None]
-            H_tilde = g[randperm, 1:-free_pred, None]
+            G_tilde = g[randperm, self.n_timesteps -1:-1-free_pred, None]
+            H_tilde = g[randperm, self.n_timesteps:-free_pred, None]
         else:
-            G_tilde = g[randperm, :-1, None]
-            H_tilde = g[randperm, 1:, None]
+            G_tilde = g[randperm, self.n_timesteps -1:-1, None]
+            H_tilde = g[randperm, self.n_timesteps:, None]
 
-        A, B, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, :-1], I_factor=self.I_factor)
-        # A, B, fit_err = self.koopman.fit_with_A(G=G_tilde, H=H_tilde, U=u[randperm, :-1], I_factor=self.I_factor)
-        # A, B, fit_err = self.koopman.fit_with_B(G=G_tilde, H=H_tilde, U=u[randperm, :-1], I_factor=self.I_factor)
+        A, B, A_inv, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, self.n_timesteps -1:-1-free_pred], I_factor=self.I_factor)
+        # A, B, A_inv, fit_err = self.koopman.fit_with_A(G=G_tilde, H=H_tilde, U=u[randperm, :-1], I_factor=self.I_factor)
+        # A, B, A_inv, fit_err = self.koopman.fit_with_B(G=G_tilde, H=H_tilde, U=u[randperm, :-1-free_pred], I_factor=self.I_factor)
         # A, B = self.koopman.fit_with_AB(G_tilde.shape[0])
         # A, A_pinv, fit_err = self.koopman.fit_block_diagonal_A(G=G_tilde, H=H_tilde, I_factor=self.I_factor)
         # B = None
@@ -253,12 +307,40 @@ class RecKoopmanModel(BaseModel):
             f_cte = f_cte.reshape(bs, n_dirs * f_cte_shape[1], *f_cte_shape[2:])
 
         # Rollout. From observation in time 0, predict with Koopman operator
-        G_for_pred = self.koopman.simulate(T=T - 1, g=g[:, 0], u=u, A=A, B=B)
+
+        # G_for_pred = self.koopman.simulate(T=T - 1, g=g[:, 0], u=u, A=A, B=B)
+        # g_for_koop = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A, B=None)
+        G_for_pred = torch.cat([g.reshape(*g.shape[:2], -1, self.n_timesteps)[:,1:self.n_timesteps, :, -1],
+                                self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=u[:, self.n_timesteps -1:], A=A, B=B)], dim=1)
+        g_for_koop = G_for_pred
+
+        # TODO: create recursive rollout. We obtain the input at each step from g
         # G_for_pred = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A, B=None)
         '''Simple version of the reverse rollout'''
         # G_for_pred_rev = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A_pinv, B=None)
         # G_for_pred = torch.flip(G_for_pred_rev, dims=[1])
         # G_for_pred = torch.cat([g[:,0:1],self.koopman.simulate(T=T - 2, g=g[:, 1], u=u, A=A, B=B)], dim=1)
+
+        if self.hankel:
+            # G_for_pred = G_for_pred.reshape(*G_for_pred.shape[:-1],
+            #                                 G_for_pred.shape[-1]// self.n_timesteps,
+            #                                 self.n_timesteps)[..., self.n_timesteps - 1]
+            # g = g.reshape(*g.shape[:-1],
+            #               g.shape[-1]// self.n_timesteps,
+            #               self.n_timesteps)[..., self.n_timesteps - 1]
+            #
+            # g_for_koop = g_for_koop.reshape(*g_for_koop.shape[:-1],
+            #               g_for_koop.shape[-1]// self.n_timesteps,
+            #               self.n_timesteps)
+            #Option 2: with hankel structure.
+            G_for_pred = G_for_pred.reshape(*G_for_pred.shape[:-1],
+                                            G_for_pred.shape[-1])
+            g = g.reshape(*g.shape[:-1],
+                          g.shape[-1]//self.n_timesteps,
+                          self.n_timesteps)[..., self.n_timesteps - 1]
+
+            g_for_koop = g_for_koop.reshape(*g_for_koop.shape[:-1],
+                                            g_for_koop.shape[-1])
 
 
         # Option 1: use the koopman object decoder
@@ -268,6 +350,7 @@ class RecKoopmanModel(BaseModel):
                                        psteps=self.psteps)
 
         # Note: Split features (cte, dyn). In case of reverse, f_cte averages for both directions.
+        # Note 2: TODO: Reconstruction could be in reversed g's or both!
         s_for_rec = torch.cat([s_for_rec.reshape(bs * self.n_objects, T, -1),
                               f_cte[:, None].mean(2).repeat(1, T, 1)], dim=-1)
         s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, T, -1),
@@ -309,6 +392,8 @@ class RecKoopmanModel(BaseModel):
         o.append(B)
         o.append(u.reshape(bs * self.n_objects, -1, u.shape[-1]))
         o.append(u_dist.reshape(bs * self.n_objects, -1, *u_dist.shape[-2:]))
+        o.append(g_for_koop.reshape(bs * self.n_objects, -1, *g_for_koop.shape[-2:]))
+        o.append(fit_err)
 
         return o
 

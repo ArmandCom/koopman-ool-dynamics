@@ -130,11 +130,12 @@ class RecKoopmanModel(BaseModel):
         # self.linear_u_T_f = nn.Linear(feat_dyn_dim * n_timesteps, u_dim)
 
         if self.hankel:
-            self.linear_u_2_g = nn.Linear(g_dim * self.n_timesteps, u_dim * 2)
+            # self.linear_u_2_g = nn.Linear(g_dim * self.n_timesteps, u_dim * 2)
+            self.linear_u_2_g = nn.Sequential(nn.Linear(g_dim * self.n_timesteps, g_dim),
+                                               nn.ReLU(),
+                                               nn.Linear(g_dim, u_dim * 2))
         else:
             self.linear_u_2_g = nn.Linear(g_dim, u_dim * 2)
-
-
 
         self.linear_f_mu = nn.Linear(feat_dim * 2, feat_dim)
         self.linear_f_logvar = nn.Linear(feat_dim * 2, feat_dim)
@@ -209,6 +210,7 @@ class RecKoopmanModel(BaseModel):
         if self.hankel:
             g, T = self._get_full_state_hankel(g, T)
 
+
         if self.reverse:
             bs = bs//n_dirs
             g = g.reshape(bs, n_dirs, self.n_objects, T, *g.shape[2:])
@@ -219,7 +221,9 @@ class RecKoopmanModel(BaseModel):
         # Option 1: All time-steps can be activated
         u_dist = F.relu(self.linear_u_2_g(g.reshape(bs * self.n_objects * T, g.shape[-1])))
         u_dist = u_dist.reshape(u_dist.size(0),self.u_dim,2)
-        u = F.gumbel_softmax(u_dist, tau=0.2, hard=True)
+        # u = F.softmax(u_dist, dim=-1)
+        # u = u * (u > 0.8)
+        u = F.gumbel_softmax(u_dist, tau=1, hard=True)
         u = u[..., 0].reshape(-1, T, self.u_dim)
 
         if self.hankel:
@@ -262,12 +266,12 @@ class RecKoopmanModel(BaseModel):
         #       B is valid for both. Then we cant cross, unless we recalculate B. It might not be necessary because we use
         #       the same A for both dirs. INVERT U's temporally --> that's a great idea. Dismiss (n_ini_timesteps - 1 samples) in each extreme Is this correct?
         #       Is it the same linear input intervention if I do it forward and backward?
-        #  4: Clip gradient, clip A_inv, norm of the matrix: Spectral normalization
         #  5: Eigenvalues and Eigenvector. Fix one get the other.
         #  6: Observation selector using Gumbel (should apply mask emissor and receptor
         #       and it should be the same across time)
         #  7: Attention mechanism to select - koopman (sub-koopman) / Identity. It will be useful for the future.
         #  8: When works, formalize code. Hyperparameters through config.yaml
+        #  9: The nonlinear projection should also separate the objects. We can separate by the svd? Is it possible?
         # 1: Prev_sample not necessary? Start from g(0)
         # 2: Sampling from features
         # 3: Bottleneck in f. Smaller than G. Constant part is big and routed directly.
@@ -275,7 +279,8 @@ class RecKoopmanModel(BaseModel):
         # 4: In evaluation, sample features several times but only keep one of the cte. Check if it captures the appearance
         # 5: Fix B with A learned. If the first doesn't require input, B will be mapped to 0.
 
-        randperm = torch.arange(g.shape[0])  if self.reverse and True else torch.randperm(g.shape[0])
+        randperm = torch.arange(g.shape[0])  if self.reverse and True \
+            else torch.randperm(g.shape[0])
 
         #Note: Inverting u(t) in the time axis
         if self.reverse:
@@ -284,14 +289,23 @@ class RecKoopmanModel(BaseModel):
             u_bw = torch.flip(u, dims=[1])
             u_bw = torch.cat([u_bw[:, self.n_timesteps:], zeros], dim=1)
             u = u_bw
+            free_pred = self.n_timesteps - 1 + 4
+        else:
+            free_pred = 0
 
-        free_pred = self.n_timesteps - 1 + 4
         if free_pred > 0:
             G_tilde = g[randperm, self.n_timesteps -1:-1-free_pred, None]
             H_tilde = g[randperm, self.n_timesteps:-free_pred, None]
         else:
             G_tilde = g[randperm, self.n_timesteps -1:-1, None]
             H_tilde = g[randperm, self.n_timesteps:, None]
+
+        # if free_pred > 0:
+        #     G_tilde = g[randperm, :-1-free_pred, None]
+        #     H_tilde = g[randperm, 1:-free_pred, None]
+        # else:
+        #     G_tilde = g[randperm, :-1, None]
+        #     H_tilde = g[randperm, 1:, None]
 
         A, B, A_inv, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, self.n_timesteps -1:-1-free_pred], I_factor=self.I_factor)
         # A, B, A_inv, fit_err = self.koopman.fit_with_A(G=G_tilde, H=H_tilde, U=u[randperm, :-1], I_factor=self.I_factor)
@@ -306,13 +320,18 @@ class RecKoopmanModel(BaseModel):
             f_cte_shape = f_cte.shape
             f_cte = f_cte.reshape(bs, n_dirs * f_cte_shape[1], *f_cte_shape[2:])
 
-        # Rollout. From observation in time 0, predict with Koopman operator
-
         # G_for_pred = self.koopman.simulate(T=T - 1, g=g[:, 0], u=u, A=A, B=B)
         # g_for_koop = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A, B=None)
-        G_for_pred = torch.cat([g.reshape(*g.shape[:2], -1, self.n_timesteps)[:,1:self.n_timesteps, :, -1],
-                                self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=u[:, self.n_timesteps -1:], A=A, B=B)], dim=1)
-        g_for_koop = G_for_pred
+        # G_for_pred = torch.cat([g.reshape(*g.shape[:2], -1, self.n_timesteps)[:,1:self.n_timesteps, :, -1],
+        #                         self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=u[:, self.n_timesteps -1:], A=A, B=B)], dim=1)
+        # g_for_koop = torch.cat([g.reshape(*g.shape[:2], -1, self.n_timesteps)[:,1:self.n_timesteps, :, -1],
+        #                         self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=None, A=A, B=None)], dim=1)
+        G_for_pred = self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=u[:, self.n_timesteps -1:], A=A, B=B)
+        g_for_koop = self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=None, A=A, B=None)
+
+        g_for_koop, T_prime = self._get_full_state_hankel(g_for_koop, g_for_koop.shape[1])
+
+        # g_for_koop = G_for_pred
 
         # TODO: create recursive rollout. We obtain the input at each step from g
         # G_for_pred = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A, B=None)
@@ -339,22 +358,19 @@ class RecKoopmanModel(BaseModel):
                           g.shape[-1]//self.n_timesteps,
                           self.n_timesteps)[..., self.n_timesteps - 1]
 
-            g_for_koop = g_for_koop.reshape(*g_for_koop.shape[:-1],
-                                            g_for_koop.shape[-1])
-
 
         # Option 1: use the koopman object decoder
         s_for_rec = self.koopman.to_s(gcodes=_get_flat(g),
                                       psteps=self.psteps)
-        s_for_pred = self.koopman.to_s(gcodes=_get_flat(torch.cat([g[:, :1],G_for_pred], dim=1)),
+        s_for_pred = self.koopman.to_s(gcodes=_get_flat(G_for_pred),
                                        psteps=self.psteps)
 
         # Note: Split features (cte, dyn). In case of reverse, f_cte averages for both directions.
         # Note 2: TODO: Reconstruction could be in reversed g's or both!
         s_for_rec = torch.cat([s_for_rec.reshape(bs * self.n_objects, T, -1),
                               f_cte[:, None].mean(2).repeat(1, T, 1)], dim=-1)
-        s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, T, -1),
-                              f_cte[:, None].mean(2).repeat(1, T, 1)], dim=-1)
+        s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1),
+                              f_cte[:, None].mean(2).repeat(1, G_for_pred.shape[1], 1)], dim=-1)
         s_for_rec = _get_flat(s_for_rec)
         s_for_pred = _get_flat(s_for_pred)
 
@@ -390,9 +406,10 @@ class RecKoopmanModel(BaseModel):
 
         o.append(A)
         o.append(B)
+        u = u[..., -1:]
         o.append(u.reshape(bs * self.n_objects, -1, u.shape[-1]))
         o.append(u_dist.reshape(bs * self.n_objects, -1, *u_dist.shape[-2:]))
-        o.append(g_for_koop.reshape(bs * self.n_objects, -1, *g_for_koop.shape[-2:]))
+        o.append(g_for_koop.reshape(bs * self.n_objects, -1, g_for_koop.shape[-1]// self.n_timesteps, self.n_timesteps))
         o.append(fit_err)
 
         return o

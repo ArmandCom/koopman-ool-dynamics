@@ -351,8 +351,17 @@ class KoopmanOperators(nn.Module, ABC):
         AB = AB[:, None].repeat(1, T, 1, 1).reshape(-1, block_size + a_block_size, block_size // self.n_timesteps)
         GU, H = GU.reshape(-1, 1, block_size + a_block_size), \
                 H.reshape(-1, 1, block_size // self.n_timesteps)
-        fit_err = H - torch.bmm(GU, AB)
-        fit_err = torch.sqrt((fit_err ** 2).mean())
+        GUAB = torch.bmm(GU, AB)
+        fit_err = H - GUAB
+        fit_err = torch.sqrt((fit_err ** 2).sum(-1).mean())
+
+        # P = torch.bmm(
+        #     self.batch_pinv(GUAB, I_factor),
+        #     H
+        # )
+        # res_fit_err = H - torch.bmm(GUAB, P)
+        # if res_fit_err.mean() > 0:
+        #     print('it is different! by: ', res_fit_err.mean().item())
 
         # reg_mask = torch.zeros_like(A)
         # ids = torch.arange(0, reg_mask.shape[-1])
@@ -490,12 +499,27 @@ class KoopmanOperators(nn.Module, ABC):
         """
         ''' B x N x R D '''
         bs, dim = g.shape
+        dim = dim // self.n_timesteps
         block_size = A.shape[-2]
         block_size_2 = A.shape[-1]
-        aug_g= g.reshape(-1, 1, block_size)
-
+        aug_g = g.reshape(-1, 1, block_size)
         new_g = torch.bmm(aug_g, A.reshape(-1, block_size, block_size_2  )).reshape(bs, 1, dim)
+
         return new_g
+
+    # def linear_forward_block_diagonal_no_input(self, g, A):
+    #     """
+    #     :param g: B x N x D
+    #     :return:
+    #     """
+    #     ''' B x N x R D '''
+    #     bs, dim = g.shape
+    #     block_size = A.shape[-2]
+    #     block_size_2 = A.shape[-1]
+    #     aug_g= g.reshape(-1, 1, block_size)
+    #
+    #     new_g = torch.bmm(aug_g, A.reshape(-1, block_size, block_size_2  )).reshape(bs, 1, dim)
+    #     return new_g
 
     # def rollout_block_diagonal(self, g, u, T, A, B):
     #     """
@@ -509,6 +533,27 @@ class KoopmanOperators(nn.Module, ABC):
     #         for t in range(T):
     #             g = self.linear_forward_block_diagonal(g, u[:, t], A, B)[:, 0]  # For single object
     #             g_list.append(g[:, None, :])
+    #     else:
+    #         for t in range(T):
+    #             g = self.linear_forward_block_diagonal_no_input(g, A)[:, 0]  # For single object
+    #             g_list.append(g[:, None, :])
+    #     return torch.cat(g_list, 1)
+
+    # def rollout_block_diagonal(self, g, u, T, A, B):
+    #     """
+    #     :param g: B x N x D
+    #     :param rel_attrs: B x N x N x R
+    #     :param T:
+    #     :return:
+    #     """
+    #     g_list = []
+    #     if u is not None:
+    #         for t in range(T):
+    #             g_new = self.linear_forward_block_diagonal(g, u[:, t], A, B)[:, 0]  # For single object
+    #             g = torch.cat([g.reshape(*g.shape[:-1], -1, self.n_timesteps)[..., 1:],
+    #                            g_new[..., None]], dim=-1)
+    #             g = g.reshape(*g.shape[:-2], -1)
+    #             g_list.append(g_new[:, None, :])
     #     else:
     #         for t in range(T):
     #             g = self.linear_forward_block_diagonal_no_input(g, A)[:, 0]  # For single object
@@ -532,8 +577,11 @@ class KoopmanOperators(nn.Module, ABC):
                 g_list.append(g_new[:, None, :])
         else:
             for t in range(T):
-                g = self.linear_forward_block_diagonal_no_input(g, A)[:, 0]  # For single object
-                g_list.append(g[:, None, :])
+                g_new = self.linear_forward_block_diagonal_no_input(g, A)[:, 0]   # For single object
+                g = torch.cat([g.reshape(*g.shape[:-1], -1, self.n_timesteps)[..., 1:],
+                           g_new[..., None]], dim=-1)
+                g = g.reshape(*g.shape[:-2], -1)
+                g_list.append(g_new[:, None, :])
         return torch.cat(g_list, 1)
 
     @staticmethod

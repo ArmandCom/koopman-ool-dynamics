@@ -96,10 +96,10 @@ def embedding_loss_bidir(output, target, lambd=0.3):
     return loss, {'Rec Loss':rec_loss, 'Pred Loss':pred_loss, 'Rec rev Loss':rec_loss_rev, 'Pred rev Loss':pred_loss_rev, #'A diag loss':loss_A, #'G Pred Loss':g_mse_loss,
                   'KL Loss':kl_loss}#, 'Local geo Loss':local_geo_loss}
 
-def embedding_loss(output, target, lambd=0.3):
+def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     # assert len(output) == 3 or len(output) == 5
 
-    rec, pred, g, mu, logvar, A, _, u, qy, g_for_koop, fit_error = output[0], output[1], output[2], output[3], \
+    rec, pred, g, mu, logvar, A, B, u, qy, g_for_koop, fit_error = output[0], output[1], output[2], output[3], \
                                                output[4], output[5], output[6], \
                                                 output[7], output[8], output[9], output[10]
 
@@ -148,18 +148,24 @@ def embedding_loss(output, target, lambd=0.3):
     # loss_A = diagonal_loss(A)
 
     '''Low rank G'''
-    T = rec.shape[1]
-    n_timesteps = g_for_koop.shape[-1]
-    g_for_koop = g_for_koop.permute(0, 2, 1, 3).reshape(-1, T-1, n_timesteps)
-    h_rank_loss = 0
-    reg_mask = torch.zeros_like(g_for_koop[..., :n_timesteps, :])
-    ids = torch.arange(0, reg_mask.shape[-1])
-    reg_mask[..., ids, ids] = 0.01
-    for t in range(T-1-n_timesteps):
-        logdet_H = torch.slogdet(g_for_koop[..., t:t+n_timesteps, :] + reg_mask)
-        h_rank_loss = h_rank_loss + .01*(logdet_H[1]).mean()
-        # logdet_H = torch.det(g_for_koop[..., t:t+n_timesteps, :] + reg_mask)
-        # h_rank_loss = h_rank_loss + torch.abs(logdet_H).mean()
+    # Option 1:
+    # T = g_for_koop.shape[1]
+    # n_timesteps = g_for_koop.shape[-1]
+    # g_for_koop = g_for_koop.permute(0, 2, 1, 3).reshape(-1, T-1, n_timesteps)
+    # h_rank_loss = 0
+    # reg_mask = torch.zeros_like(g_for_koop[..., :n_timesteps, :])
+    # ids = torch.arange(0, reg_mask.shape[-1])
+    # reg_mask[..., ids, ids] = 0.01
+    # for t in range(T-1-n_timesteps):
+    #     logdet_H = torch.slogdet(g_for_koop[..., t:t+n_timesteps, :] + reg_mask)
+    #     h_rank_loss = h_rank_loss + .01*(logdet_H[1]).mean()
+
+    if epoch_iter[0] < n_iters_start:
+        lambd_1 = 0.1
+    else:
+        lambd_1 = 0.1
+    h_rank_loss = lambd_1 * (l1_loss(A, torch.zeros_like(A)).mean(0).sum()
+                           + l1_loss(B, torch.zeros_like(B)).mean(0).sum())
 
     '''Input sparsity loss
         u: [bs, T, feat_dim]
@@ -169,7 +175,11 @@ def embedding_loss(output, target, lambd=0.3):
     # l1_u = 2 * (l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean() -
     #        mse_loss(u, torch.ones_like(u)*0.5).sum(-1).sum(-1).mean())
     # Option 2: Penalize activations
-    l1_u = l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
+    if epoch_iter[0] < n_iters_start:
+        lambd_2 = 0.1
+    else:
+        lambd_2 = 1.5
+    l1_u = lambd_2 * l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
     # Option 3: Penalize if a specific dimension has a single activation in it,
     #  but it doesn't matter how many timesteps.
     # u_max, _ = torch.max(u, dim=1)
@@ -179,6 +189,11 @@ def embedding_loss(output, target, lambd=0.3):
     rec_loss = 10 * mse_loss(rec, target[:, -rec.shape[1]:]) \
         .view(rec.size(0)*(rec.size(1)), -1).sum(dim=-1).mean()
     # pred_loss = torch.zeros(1)
+
+    # if epoch_iter[0] < n_iters_start:
+    #     lambd_pred = 1
+    # else:
+    #     lambd_pred = 0
     free_pred = 0
     if free_pred < 1:
         pred_loss = 10 * mse_loss(pred, target[:, -pred.shape[1]:]) \
@@ -189,19 +204,28 @@ def embedding_loss(output, target, lambd=0.3):
 
     '''Local geometry loss'''
     # local_geo_loss = torch.zeros(1)
-    g = g[:, :T]
-    local_geo_loss = local_geo(g, target[:, -g.shape[1]:])
+    if epoch_iter[0] < n_iters_start:
+        lambd_3 = 0
+    else:
+        lambd_3 = 10
+    g = g[:, :rec.shape[1]]
+    local_geo_loss = lambd_3 * local_geo(g, target[:, -g.shape[1]:])
+
+
+    if epoch_iter[0] < n_iters_start:
+        lambd_4 = 0
+    else:
+        lambd_4 = 100
+    fit_error = lambd_4 * fit_error
 
     '''Total Loss'''
-    loss = (rec_loss
+    loss = (  rec_loss
             + pred_loss
             + kl_loss
-            # + h_rank_loss
-            # + g_mse_loss
+            + h_rank_loss
             + l1_u
-            # + loss_diag_A
-            + fit_error
-            + lambd * local_geo_loss
+            # + fit_error
+            # + local_geo_loss
             )
 
     return loss, {'Rec Loss':rec_loss,

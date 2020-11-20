@@ -51,7 +51,8 @@ class Trainer(BaseTrainer):
 
             self.optimizer.zero_grad()
             output = self.model(data)
-            loss, loss_particles = self.criterion(output, target, lambd=self.config["trainer"]["lambd"])
+            loss, loss_particles = self.criterion(output, target,
+                                                  epoch_iter=(epoch, (epoch + 1)*batch_idx), lambd=self.config["trainer"]["lambd"])
             loss.backward()
             # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1000)
             self.optimizer.step()

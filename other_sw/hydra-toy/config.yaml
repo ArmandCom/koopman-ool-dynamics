@@ -1,9 +1,0 @@
-db:
-  driver: mysql
-  user: omry
-  pass: secret
-  hello: hello
-  salutations:
-    - hi: hello
-  salutations_2:
-    hi_2: hello

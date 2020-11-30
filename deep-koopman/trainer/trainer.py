@@ -50,7 +50,7 @@ class Trainer(BaseTrainer):
             data, target = data.to(self.device), target.to(self.device)
 
             self.optimizer.zero_grad()
-            output = self.model(data)
+            output = self.model(data, epoch)
             loss, loss_particles = self.criterion(output, target,
                                                   epoch_iter=(epoch, (epoch + 1)*batch_idx), lambd=self.config["trainer"]["lambd"])
             loss.backward()
@@ -99,8 +99,10 @@ class Trainer(BaseTrainer):
                 target = data  # Is data a variable?
                 data, target = data.to(self.device), target.to(self.device)
 
-                output = self.model(data)
-                loss, loss_particles = self.criterion(output, target, lambd=self.config["trainer"]["lambd"])
+                output = self.model(data, epoch=epoch)
+                loss, loss_particles = self.criterion(output, target,
+                                                      epoch_iter=(epoch, (epoch + 1)*batch_idx),
+                                                      lambd=self.config["trainer"]["lambd"])
 
                 self.writer.set_step((epoch - 1) * len(self.valid_data_loader) + batch_idx, 'valid')
                 self.valid_metrics.update('loss', loss.item())
@@ -110,8 +112,8 @@ class Trainer(BaseTrainer):
                 self._show(data, output, train=False)
 
         # add histogram of model parameters to the tensorboard
-        for name, p in self.model.named_parameters():
-            self.writer.add_histogram(name, p, bins='auto')
+        # for name, p in self.model.named_parameters():
+        #     self.writer.add_histogram(name, p, bins='auto')
         return self.valid_metrics.result()
 
     def _progress(self, batch_idx):

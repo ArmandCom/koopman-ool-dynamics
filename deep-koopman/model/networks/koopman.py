@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
+import torch.nn.functional as F
 
 class RelationEncoder(nn.Module):
     def __init__(self, input_size, hidden_size, output_size):
@@ -215,18 +216,29 @@ class KoopmanOperators(nn.Module, ABC):
 
         ''' state '''
         # TODO: state_dim * n_timesteps if not hankel. Pass hankel as parameter.
-        input_particle_dim = state_dim #* n_timesteps #+ g_dim #TODO: g_dim added for recursive sampling
+        input_particle_dim = state_dim * n_timesteps #+ g_dim #TODO: g_dim added for recursive sampling
 
         self.mapping = SimplePropagationNetwork(
             input_particle_dim=input_particle_dim, nf_particle=nf_particle,
             nf_effect=nf_effect, output_dim=g_dim, output_action_dim = u_dim, tanh=False,  # use tanh to enforce the shape of the code space
             residual=residual) # g * 2
 
+
+        # self.linear_u_mapping = nn.Linear(g_dim * self.n_timesteps, u_dim * 2)
+        # self.nlinear_u_mapping = nn.Sequential(nn.Linear(state_dim * n_timesteps, g_dim),
+        #                                    nn.ReLU(),
+        #                                    nn.Linear(state_dim, u_dim * 2))
+        # self.nlinear_u_mapping = nn.Sequential(nn.Linear(state_dim * n_timesteps, state_dim),
+        #                                   nn.ReLU(),
+        #                                   nn.Linear(state_dim, u_dim + 1))
+        self.gru_u_mapping = nn.GRU(state_dim * n_timesteps, u_dim, num_layers = 2, batch_first=True)
+        self.nlinear_u_mapping = nn.Sequential(nn.Linear(state_dim * n_timesteps, state_dim),
+                                          nn.ReLU(),
+                                          nn.Linear(state_dim, u_dim))
+
         # the state for decoding phase is replaced with code of g_dim
         input_particle_dim = g_dim
-
         # print('state_decoder', 'node', input_particle_dim, 'edge', input_relation_dim)
-
         self.inv_mapping = SimplePropagationNetwork(
             input_particle_dim=input_particle_dim, nf_particle=nf_particle,
             nf_effect=nf_effect, output_dim=state_dim, tanh=False, residual=residual)
@@ -261,55 +273,28 @@ class KoopmanOperators(nn.Module, ABC):
         """ state encoder """
         return self.mapping(states=states, psteps=psteps)
 
+    def to_u(self, states, temp):
+        """ state encoder """
+        # u_dist = self.nlinear_u_mapping(states.reshape(-1, states.shape[-1]))
+        u_dist, _ = self.gru_u_mapping(states)
+        print('U_dist dimension!: ', u_dist.shape)
+        u_dist = u_dist.reshape(*states.shape[:-1], -1)
+        u = F.sigmoid(u_dist * temp)
+
+        # Note: Binarize
+        u_soft = u
+        zeros = torch.zeros_like(u)
+        ones = 1 - zeros
+        u_hard = torch.where(u > 0.5, ones, zeros)
+        u = u_hard - u_soft.detach() + u_soft
+
+        # u_dist = F.relu(u_dist) # Note: Is relu necessary here?
+        # u = F.gumbel_softmax(u_dist, tau=1/temp, hard=True)[..., 1:]
+        return u, u_dist
+
     # def to_g(self, states, hidden):
     #     """ state encoder """
     #     return self.mapping(states=states, prev_hidden=hidden)
-
-    # def fit_block_diagonal(self, G, H, U, I_factor):
-    #     # TODO: it makes no sense that f_1(t+1) can contribute to f_2(t).
-    #     #  but it makes sense the other way around.
-    #     #  HOWEVER: We should simplify by assuming that
-    #     #       all f_i(0) can interact with each other and all f_1(t) too.
-    #     #       In any case, the regressor is in the null space of H,
-    #     #       which I guess it is the same as we are doing now. Isn't it?
-    #     #  A way to do it:
-    #     #        G is the concatenation of time 0, 1, 2 and U too.
-    #     #        Least squares will be done with H of size (f),
-    #     #        G of size (3f) and u of size (3*usize)
-    #     bs, T, N, D = G.size()
-    #
-    #     a_dim = U.shape[-1]
-    #
-    #     assert D % self.num_blocks == 0
-    #     block_size = D // self.num_blocks
-    #     a_block_size = a_dim // self.num_blocks
-    #
-    #     G, H, U = G.reshape(bs, T, N, -1, block_size), \
-    #               H.reshape(bs, T, N, -1, block_size), \
-    #               U.reshape(bs, T, N, -1, a_block_size)
-    #     G, H, U = G.permute(0, 3, 1, 2, 4), H.permute(0, 3, 1, 2, 4), U.permute(0, 3, 1, 2, 4)
-    #
-    #
-    #     GU = torch.cat([G, U], -1)
-    #     '''B x (D) x D'''
-    #     AB = torch.bmm(
-    #         self.batch_pinv(GU.reshape(bs * self.num_blocks, T * N, block_size + a_block_size), I_factor),
-    #         H.reshape(bs * self.num_blocks, T * N, block_size)
-    #     )
-    #     print(AB.shape)
-    #     A = AB[:, :block_size].reshape(bs, self.num_blocks, block_size, block_size)
-    #     B = AB[:, block_size:].reshape(bs, self.num_blocks, a_block_size, block_size)
-    #     fit_err = 0
-    #     # fit_err = H.reshape(bs, T * N, D) - torch.bmm(GU, AB)
-    #     # fit_err = torch.sqrt((fit_err ** 2).mean())
-    #
-    #     reg_mask = torch.zeros_like(A)
-    #     ids = torch.arange(0, reg_mask.shape[-1])
-    #     reg_mask[..., ids, ids] = 0.01
-    #     A_inv = torch.inverse(A + reg_mask).reshape(bs, self.num_blocks, block_size, block_size)
-    #     A_inv = torch.clamp(A_inv, min = -1.5, max = 1.5)
-    #
-    #     return A, B, A_inv
 
     def fit_block_diagonal(self, G, H, U, I_factor):
         # TODO: it makes no sense that f_1(t+1) can contribute to f_2(t).
@@ -330,9 +315,8 @@ class KoopmanOperators(nn.Module, ABC):
         block_size = D // self.num_blocks
         a_block_size = a_dim // self.num_blocks
 
-        H = H.reshape(*H.shape[:-1], -1, self.n_timesteps)[..., -1]
         G, H, U = G.reshape(bs, T, N, -1, block_size), \
-                  H.reshape(bs, T, N, -1, block_size // self.n_timesteps), \
+                  H.reshape(bs, T, N, -1, block_size), \
                   U.reshape(bs, T, N, -1, a_block_size)
         G, H, U = G.permute(0, 3, 1, 2, 4), H.permute(0, 3, 1, 2, 4), U.permute(0, 3, 1, 2, 4)
 
@@ -341,36 +325,96 @@ class KoopmanOperators(nn.Module, ABC):
         '''B x (D) x D'''
         AB = torch.bmm(
             self.batch_pinv(GU.reshape(bs * self.num_blocks, T * N, block_size + a_block_size), I_factor),
-            H.reshape(bs * self.num_blocks, T * N, block_size // self.n_timesteps)
+            H.reshape(bs * self.num_blocks, T * N, block_size)
         )
+        A = AB[:, :block_size].reshape(bs, self.num_blocks, block_size, block_size)
+        B = AB[:, block_size:].reshape(bs, self.num_blocks, a_block_size, block_size)
+        fit_err = 0
+        # fit_err = H.reshape(bs, T * N, D) - torch.bmm(GU, AB)
+        # fit_err = torch.sqrt((fit_err ** 2).mean())
 
-        A = AB[:, :block_size].reshape(bs, self.num_blocks, block_size, block_size // self.n_timesteps)
-        B = AB[:, block_size:].reshape(bs, self.num_blocks, a_block_size, block_size // self.n_timesteps)
+        # AB = AB[:, None].repeat(1, T, 1, 1).reshape(-1, block_size + a_block_size, block_size)
+        # GU, H = GU.reshape(-1, 1, block_size + a_block_size), \
+        #         H.reshape(-1, 1, block_size)
+        # GUAB = torch.bmm(GU, AB)
+        # fit_err = H - GUAB
+        # fit_err = torch.sqrt((fit_err ** 2).sum(-1).mean())
+        #
+        #     # P = torch.bmm(
+        #     #     self.batch_pinv(GUAB, I_factor),
+        #     #     H
+        #     # )
+        #     # res_fit_err = H - torch.bmm(GUAB, P)
+        #     # if res_fit_err.mean() > 0:
+        #     #     print('it is different! by: ', res_fit_err.mean().item())
 
-
-        AB = AB[:, None].repeat(1, T, 1, 1).reshape(-1, block_size + a_block_size, block_size // self.n_timesteps)
-        GU, H = GU.reshape(-1, 1, block_size + a_block_size), \
-                H.reshape(-1, 1, block_size // self.n_timesteps)
-        GUAB = torch.bmm(GU, AB)
-        fit_err = H - GUAB
-        fit_err = torch.sqrt((fit_err ** 2).sum(-1).mean())
-
-        # P = torch.bmm(
-        #     self.batch_pinv(GUAB, I_factor),
-        #     H
-        # )
-        # res_fit_err = H - torch.bmm(GUAB, P)
-        # if res_fit_err.mean() > 0:
-        #     print('it is different! by: ', res_fit_err.mean().item())
-
-        # reg_mask = torch.zeros_like(A)
-        # ids = torch.arange(0, reg_mask.shape[-1])
-        # reg_mask[..., ids, ids] = 0.01
-        # A_inv = torch.inverse(A + reg_mask).reshape(bs, self.num_blocks, block_size, block_size)
-        # A_inv = torch.clamp(A_inv, min = -1.5, max = 1.5)
-        A_inv = 0
+        reg_mask = torch.zeros_like(A)
+        ids = torch.arange(0, reg_mask.shape[-1])
+        reg_mask[..., ids, ids] = 0.01
+        A_inv = torch.inverse(A + reg_mask).reshape(bs, self.num_blocks, block_size, block_size)
+        A_inv = torch.clamp(A_inv, min = -1.5, max = 1.5)
 
         return A, B, A_inv, fit_err
+
+    # def fit_block_diagonal(self, G, H, U, I_factor):
+    #     # TODO: it makes no sense that f_1(t+1) can contribute to f_2(t).
+    #     #  but it makes sense the other way around.
+    #     #  HOWEVER: We should simplify by assuming that
+    #     #       all f_i(0) can interact with each other and all f_1(t) too.
+    #     #       In any case, the regressor is in the null space of H,
+    #     #       which I guess it is the same as we are doing now. Isn't it?
+    #     #  A way to do it:
+    #     #        G is the concatenation of time 0, 1, 2 and U too.
+    #     #        Least squares will be done with H of size (f),
+    #     #        G of size (3f) and u of size (3*usize)
+    #     bs, T, N, D = G.size()
+    #
+    #     a_dim = U.shape[-1]
+    #
+    #     assert D % self.num_blocks == 0
+    #     block_size = D // self.num_blocks
+    #     a_block_size = a_dim // self.num_blocks
+    #
+    #     H = H.reshape(*H.shape[:-1], -1, self.n_timesteps)[..., -1]
+    #     G, H, U = G.reshape(bs, T, N, -1, block_size), \
+    #               H.reshape(bs, T, N, -1, block_size // self.n_timesteps), \
+    #               U.reshape(bs, T, N, -1, a_block_size)
+    #     G, H, U = G.permute(0, 3, 1, 2, 4), H.permute(0, 3, 1, 2, 4), U.permute(0, 3, 1, 2, 4)
+    #
+    #     GU = torch.cat([G, U], -1)
+    #     '''B x (D) x D'''
+    #     AB = torch.bmm(
+    #         self.batch_pinv(GU.reshape(bs * self.num_blocks, T * N, block_size + a_block_size), I_factor),
+    #         H.reshape(bs * self.num_blocks, T * N, block_size // self.n_timesteps)
+    #     )
+    #
+    #     A = AB[:, :block_size].reshape(bs, self.num_blocks, block_size, block_size // self.n_timesteps)
+    #     B = AB[:, block_size:].reshape(bs, self.num_blocks, a_block_size, block_size // self.n_timesteps)
+    #
+    #
+    #     AB = AB[:, None].repeat(1, T, 1, 1).reshape(-1, block_size + a_block_size, block_size // self.n_timesteps)
+    #     GU, H = GU.reshape(-1, 1, block_size + a_block_size), \
+    #             H.reshape(-1, 1, block_size // self.n_timesteps)
+    #     GUAB = torch.bmm(GU, AB)
+    #     fit_err = H - GUAB
+    #     fit_err = torch.sqrt((fit_err ** 2).sum(-1).mean())
+    #
+    #     # P = torch.bmm(
+    #     #     self.batch_pinv(GUAB, I_factor),
+    #     #     H
+    #     # )
+    #     # res_fit_err = H - torch.bmm(GUAB, P)
+    #     # if res_fit_err.mean() > 0:
+    #     #     print('it is different! by: ', res_fit_err.mean().item())
+    #
+    #     # reg_mask = torch.zeros_like(A)
+    #     # ids = torch.arange(0, reg_mask.shape[-1])
+    #     # reg_mask[..., ids, ids] = 0.01
+    #     # A_inv = torch.inverse(A + reg_mask).reshape(bs, self.num_blocks, block_size, block_size)
+    #     # A_inv = torch.clamp(A_inv, min = -1.5, max = 1.5)
+    #     A_inv = 0
+    #
+    #     return A, B, A_inv, fit_err
 
     def fit_with_A(self, G, H, U, I_factor):
 
@@ -482,7 +526,7 @@ class KoopmanOperators(nn.Module, ABC):
         """
         ''' B x N x R D '''
         bs, dim = g.shape
-        dim = dim // u.shape[-1]
+        # dim = dim // self.n_timesteps #TODO:HANKEL This is for hankel view
         block_size = A.shape[-2]
         block_size_2 = A.shape[-1]
         a_block_size = B.shape[-2]
@@ -499,7 +543,7 @@ class KoopmanOperators(nn.Module, ABC):
         """
         ''' B x N x R D '''
         bs, dim = g.shape
-        dim = dim // self.n_timesteps
+        # dim = dim // self.n_timesteps #TODO:HANKEL This is for hankel view
         block_size = A.shape[-2]
         block_size_2 = A.shape[-1]
         aug_g = g.reshape(-1, 1, block_size)
@@ -560,6 +604,30 @@ class KoopmanOperators(nn.Module, ABC):
     #             g_list.append(g[:, None, :])
     #     return torch.cat(g_list, 1)
 
+    # def rollout_block_diagonal(self, g, u, T, A, B):
+    #     """
+    #     :param g: B x N x D
+    #     :param rel_attrs: B x N x N x R
+    #     :param T:
+    #     :return:
+    #     """
+    #     g_list = []
+    #     if u is not None:
+    #         for t in range(T):
+    #             g_new = self.linear_forward_block_diagonal(g, u[:, t], A, B)[:, 0]  # For single object
+    #             g = torch.cat([g.reshape(*g.shape[:-1], -1, self.n_timesteps)[..., 1:],
+    #                            g_new[..., None]], dim=-1)
+    #             g = g.reshape(*g.shape[:-2], -1)
+    #             g_list.append(g_new[:, None, :])
+    #     else:
+    #         for t in range(T):
+    #             g_new = self.linear_forward_block_diagonal_no_input(g, A)[:, 0]   # For single object
+    #             g = torch.cat([g.reshape(*g.shape[:-1], -1, self.n_timesteps)[..., 1:],
+    #                        g_new[..., None]], dim=-1)
+    #             g = g.reshape(*g.shape[:-2], -1)
+    #             g_list.append(g_new[:, None, :])
+    #     return torch.cat(g_list, 1)
+
     def rollout_block_diagonal(self, g, u, T, A, B):
         """
         :param g: B x N x D
@@ -570,18 +638,12 @@ class KoopmanOperators(nn.Module, ABC):
         g_list = []
         if u is not None:
             for t in range(T):
-                g_new = self.linear_forward_block_diagonal(g, u[:, t], A, B)[:, 0]  # For single object
-                g = torch.cat([g.reshape(*g.shape[:-1], -1, self.n_timesteps)[..., 1:],
-                               g_new[..., None]], dim=-1)
-                g = g.reshape(*g.shape[:-2], -1)
-                g_list.append(g_new[:, None, :])
+                g = self.linear_forward_block_diagonal(g, u[:, t], A, B)[:, 0]  # For single object
+                g_list.append(g[:, None, :])
         else:
             for t in range(T):
-                g_new = self.linear_forward_block_diagonal_no_input(g, A)[:, 0]   # For single object
-                g = torch.cat([g.reshape(*g.shape[:-1], -1, self.n_timesteps)[..., 1:],
-                           g_new[..., None]], dim=-1)
-                g = g.reshape(*g.shape[:-2], -1)
-                g_list.append(g_new[:, None, :])
+                g = self.linear_forward_block_diagonal_no_input(g, A)[:, 0]  # For single object
+                g_list.append(g[:, None, :])
         return torch.cat(g_list, 1)
 
     @staticmethod

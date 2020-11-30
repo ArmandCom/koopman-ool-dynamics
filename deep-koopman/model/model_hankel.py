@@ -111,8 +111,8 @@ class RecKoopmanModel(BaseModel):
         self.g_dim = g_dim
         self.n_objects = n_objects
 
-        # self.softmax = nn.Softmax(dim=-1)
-        # self.sigmoid = nn.Sigmoid()
+        self.softmax = nn.Softmax(dim=-1)
+        self.sigmoid = nn.Sigmoid()
 
         # self.linear_g = nn.Linear(g_dim, g_dim)
 
@@ -123,10 +123,29 @@ class RecKoopmanModel(BaseModel):
         feat_dyn_dim = feat_dim // 6
         self.feat_dyn_dim = feat_dyn_dim
         self.content = None
-        # self.reverse = True
         self.reverse = False
+        self.hankel = True
         self.ini_alpha = 1
-        self.incr_alpha = 0.25
+        self.incr_alpha = 0.5
+
+        # self.linear_u = nn.Linear(g_dim + u_dim, u_dim * 2)
+        # self.linear_u_2_f = nn.Linear(feat_dyn_dim * n_timesteps, u_dim * 2)
+        # self.linear_u_T_f = nn.Linear(feat_dyn_dim * n_timesteps, u_dim)
+
+        if self.hankel:
+            # self.linear_u_2_g = nn.Linear(g_dim * self.n_timesteps, u_dim * 2)
+            # self.linear_u_2_g = nn.Sequential(nn.Linear(g_dim * self.n_timesteps, g_dim),
+            #                                    nn.ReLU(),
+            #                                    nn.Linear(g_dim, u_dim * 2))
+            # self.linear_u_all_g = nn.Sequential(nn.Linear(g_dim * self.n_timesteps, g_dim),
+            #                                   nn.ReLU(),
+            #                                   nn.Linear(g_dim, u_dim + 1))
+            # self.gru_u_all_g = nn.GRU(g_dim, u_dim + 1, num_layers = 2, batch_first=True)
+            self.linear_u_1_g = nn.Sequential(nn.Linear(g_dim * self.n_timesteps, g_dim),
+                                                nn.ReLU(),
+                                                nn.Linear(g_dim, u_dim))
+        else:
+            self.linear_u_2_g = nn.Linear(g_dim, u_dim * 2)
 
         self.linear_f_mu = nn.Linear(feat_dim * 2, feat_dim)
         self.linear_f_logvar = nn.Linear(feat_dim * 2, feat_dim)
@@ -172,20 +191,13 @@ class RecKoopmanModel(BaseModel):
 
     def forward(self, input, epoch = 1):
         bs, T, ch, h, w = input.shape
-        n_dirs = 1
-        f = self.image_encoder(input) # (bs * n_objects * T, feat_dim)
+        (n_dirs, bs) = (2, 2*bs) if self.reverse else (1, bs)
+        f = self.image_encoder(input, reverse = self.reverse)
         f_mu = self.linear_f_mu(f)
         f_logvar = self.linear_f_logvar(f)
         # Concatenates the features from current time and previous to create full state
         # f_mu, f_logvar = torch.chunk(f, 2, dim=-1)
         f = _sample_latent_simple(f_mu, f_logvar)
-
-        if self.reverse:
-            f = f.reshape(bs, T, *f.shape[1:])
-            f_rev = torch.flip(f, dims=[1])
-            f = torch.stack([f, f_rev], dim=1)
-            bs, n_dirs = 2*bs, 2
-            f = f.reshape(bs * T, f.shape[-1]) # (bs * n_objects * n_dir * T, feat_dim) And from this point on bs doubles.
 
         # Note: Split features (cte, dyn)
         f_dyn, f_cte = f[..., :self.feat_dyn_dim], f[..., self.feat_dyn_dim:]
@@ -196,19 +208,82 @@ class RecKoopmanModel(BaseModel):
         #     self.content = f_cte
         # f_cte = self.content
 
-        f = f_dyn.reshape(bs * self.n_objects, T, *f_dyn.shape[1:])
-        f, T = self._get_full_state_hankel(f, T)
+        f = f_dyn
+        f = f.reshape(bs * self.n_objects * T, -1)
 
-        u, u_dist = self.koopman.to_u(f, temp=self.ini_alpha + epoch * self.incr_alpha)
-        g = self.koopman.to_g(f.reshape(bs * self.n_objects * T, -1), self.psteps)
+        if not self.hankel:
+            f, T = self._get_full_state(f, T)
+
+        g = self.koopman.to_g(f, self.psteps)
         g = g.reshape(bs * self.n_objects, T, *g.shape[1:])
+
+        if self.hankel:
+            g_flat = g
+            g, T = self._get_full_state_hankel(g, T)
+
 
         if self.reverse:
             bs = bs//n_dirs
-            g = g.reshape(bs, self.n_objects, n_dirs, T, *g.shape[2:])
-            g_fw = g[:, :, 0].reshape(bs * self.n_objects, T, *g.shape[4:])
-            g_bw = g[:, :, 1].reshape(bs * self.n_objects, T, *g.shape[4:])
+            g = g.reshape(bs, n_dirs, self.n_objects, T, *g.shape[2:])
+            g_fw = g[:, 0].reshape(bs * self.n_objects, T, *g.shape[4:])
+            g_bw = g[:, 1].reshape(bs * self.n_objects, T, *g.shape[4:])
             g = g_bw
+
+        # Option 1: Sigmoid. All time-steps can be activated, binary activation. With dropout
+        u_dist = self.linear_u_1_g(g.reshape(bs * self.n_objects * T, g.shape[-1]))
+        u_dist = u_dist.reshape(u_dist.size(0),self.u_dim)
+        u = self.sigmoid((self.ini_alpha + epoch * self.incr_alpha)*u_dist).reshape(-1, T, self.u_dim)
+        # u = torch.abs(u - torch.ones_like(u)*0.5)*2
+        # do = nn.Dropout(p=0.2)
+        # u = do(u)
+        # Option 2: Gumbel/softmax. All time-steps can be activated. 1 action at a time, or None.
+        # F.relu
+        # u_dist, _ = (self.gru_u_all_g(g_flat
+        #                           .reshape(bs * self.n_objects, T + self.n_timesteps -1, g_flat.shape[-1])))
+        # u_dist = u_dist[:, self.n_timesteps-1:].reshape(bs *self.n_objects* T, - 1)
+        # # u_dist = self.linear_u_all_g(g.reshape(bs * self.n_objects * T, g.shape[-1]))
+        # u_dist = u_dist.reshape(u_dist.size(0), self.u_dim + 1)
+        # u = F.gumbel_softmax(u_dist, tau=1, hard=True)
+        # u = u[..., 1:].reshape(-1, T, self.u_dim)
+        # # u_dist = u_dist.reshape(u_dist.size(0), self.u_dim + 1)
+        # # temp = 0.01
+        # # u = nn.Softmax(dim=-1)(u_dist/temp)
+        # # u = u[..., 1:].reshape(-1, T, self.u_dim)
+        # Option 3: Categorical. All time-steps can be activated. 1 action at a time. Non-diff
+        # u_dist = F.sigmoid(self.linear_u_all_g(g.reshape(bs * self.n_objects * T, g.shape[-1])))
+        # u_dist = u_dist.reshape(u_dist.size(0), self.u_dim + 1)
+        # u_cat = Categorical(u_dist)
+        # u = u_cat.sample()
+        # u = F.one_hot(u).float()
+        # u = u[..., 1:].reshape(-1, T, self.u_dim) # The first possible action is the inaction. Which should have the max prob.
+
+        if self.hankel:
+            zero_pad = torch.zeros_like(u[:, :self.n_timesteps-1])
+            u = torch.cat([zero_pad, u], dim=1)
+            u, T_u = self._get_full_state_hankel(u, T+self.n_timesteps-1)
+            # u = u.reshape(*u.shape[:-1], u.shape[-1] // self.n_timesteps, self.n_timesteps)
+            assert T_u == T
+
+        # Option 2: One activation for all time-steps. Too strong of an assumption.
+        # u_dist = F.relu(self.linear_u_T(f))
+        # u_dist = u_dist.reshape(-1, T, self.u_dim).permute(0, 2, 1)
+        # u = F.gumbel_softmax(u_dist, tau=1, hard=True)
+        # u = u.permute(0, 2, 1)
+        # Option 3: Actions are given by the observations g, obtained one at a time (Not necessary?)
+        # us, u_dist = [], []
+        # for t in range(T):
+        #     if t==0:
+        #         prev_u_sample = torch.zeros_like(g[:, 0, :self.u_dim])
+        #     q_y = F.relu(self.linear_u(f))
+        #     q_y = q_y.view(q_y.size(0),self.u_dim,2)
+        #     u = F.gumbel_softmax(q_y, tau=1, hard=True)
+        #     u = u[..., 0]
+        #
+        #     prev_u_sample = u
+        #     us.append(u)
+        #     u_dist.append(q_y)
+        # u = torch.stack(us, dim=1)
+        # u_dist = torch.stack(u_dist, dim=1)
 
         # TODO:
         #  0: state as velocity acceleration, pose
@@ -234,11 +309,10 @@ class RecKoopmanModel(BaseModel):
         # 4: In evaluation, sample features several times but only keep one of the cte. Check if it captures the appearance
         # 5: Fix B with A learned. If the first doesn't require input, B will be mapped to 0.
 
-        randperm = torch.arange(g.shape[0])  if self.reverse or True\
+        randperm = torch.arange(g.shape[0])  if self.reverse \
             else torch.randperm(g.shape[0])
 
         #Note: Inverting u(t) in the time axis
-        # TODO: still here but im tired.
         if self.reverse:
             u_fw = u
             zeros = torch.zeros_like(u[:, :self.n_timesteps])
@@ -247,25 +321,23 @@ class RecKoopmanModel(BaseModel):
             u = u_bw
             free_pred = self.n_timesteps - 1 + 4
         else:
-            free_pred = 1 - T//4
-
-        # if free_pred > 0:
-        #     G_tilde = g[randperm, self.n_timesteps -1:-1-free_pred, None]
-        #     H_tilde = g[randperm, self.n_timesteps:-free_pred, None]
-        # else:
-        #     G_tilde = g[randperm, self.n_timesteps -1:-1, None]
-        #     H_tilde = g[randperm, self.n_timesteps:, None]
+            free_pred = 0
 
         if free_pred > 0:
-            G_tilde = g[randperm, :-1-free_pred, None]
-            H_tilde = g[randperm, 1:-free_pred, None]
+            G_tilde = g[randperm, self.n_timesteps -1:-1-free_pred, None]
+            H_tilde = g[randperm, self.n_timesteps:-free_pred, None]
         else:
-            G_tilde = g[randperm, :-1, None]
-            H_tilde = g[randperm, 1:, None]
+            G_tilde = g[randperm, self.n_timesteps -1:-1, None]
+            H_tilde = g[randperm, self.n_timesteps:, None]
 
-        # TODO: If we identify with half of the timesteps, but use all inputs for rollout,
-        #  we might get something. We can also predict only the future.
-        A, B, A_inv, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, :-1-free_pred], I_factor=self.I_factor)
+        # if free_pred > 0:
+        #     G_tilde = g[randperm, :-1-free_pred, None]
+        #     H_tilde = g[randperm, 1:-free_pred, None]
+        # else:
+        #     G_tilde = g[randperm, :-1, None]
+        #     H_tilde = g[randperm, 1:, None]
+
+        A, B, A_inv, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, self.n_timesteps -1:-1-free_pred], I_factor=self.I_factor)
         # A, B, A_inv, fit_err = self.koopman.fit_with_A(G=G_tilde, H=H_tilde, U=u[randperm, :-1], I_factor=self.I_factor)
         # A, B, A_inv, fit_err = self.koopman.fit_with_B(G=G_tilde, H=H_tilde, U=u[randperm, :-1-free_pred], I_factor=self.I_factor)
         # A, B = self.koopman.fit_with_AB(G_tilde.shape[0])
@@ -284,11 +356,10 @@ class RecKoopmanModel(BaseModel):
         #                         self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=u[:, self.n_timesteps -1:], A=A, B=B)], dim=1)
         # g_for_koop = torch.cat([g.reshape(*g.shape[:2], -1, self.n_timesteps)[:,1:self.n_timesteps, :, -1],
         #                         self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=None, A=A, B=None)], dim=1)
-        # G_for_pred = self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=u[:, self.n_timesteps -1:], A=A, B=B)
-        # g_for_koop = self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=None, A=A, B=None)
-        G_for_pred = self.koopman.simulate(T=T - 4, g=g[:, 3], u=u, A=A, B=B)
-        g_for_koop = self.koopman.simulate(T=T - 4, g=g[:, 3], u=None, A=A, B=None)
+        G_for_pred = self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=u[:, self.n_timesteps -1:], A=A, B=B)
+        g_for_koop = self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=None, A=A, B=None)
 
+        g_for_koop, T_prime = self._get_full_state_hankel(g_for_koop, g_for_koop.shape[1])
 
         # g_for_koop = G_for_pred
 
@@ -299,23 +370,23 @@ class RecKoopmanModel(BaseModel):
         # G_for_pred = torch.flip(G_for_pred_rev, dims=[1])
         # G_for_pred = torch.cat([g[:,0:1],self.koopman.simulate(T=T - 2, g=g[:, 1], u=u, A=A, B=B)], dim=1)
 
-        # if self.hankel:
-        #     # G_for_pred = G_for_pred.reshape(*G_for_pred.shape[:-1],
-        #     #                                 G_for_pred.shape[-1]// self.n_timesteps,
-        #     #                                 self.n_timesteps)[..., self.n_timesteps - 1]
-        #     # g = g.reshape(*g.shape[:-1],
-        #     #               g.shape[-1]// self.n_timesteps,
-        #     #               self.n_timesteps)[..., self.n_timesteps - 1]
-        #     g_for_koop, T_prime = self._get_full_state_hankel(g_for_koop, g_for_koop.shape[1])
-        #     g_for_koop = g_for_koop.reshape(*g_for_koop.shape[:-1],
-        #                   g_for_koop.shape[-1]// self.n_timesteps,
-        #                   self.n_timesteps)
-        #     # #Option 2: with hankel structure.
-        #     # G_for_pred = G_for_pred.reshape(*G_for_pred.shape[:-1],
-        #     #                                 G_for_pred.shape[-1])
-        #     # g = g.reshape(*g.shape[:-1],
-        #     #               g.shape[-1]//self.n_timesteps,
-        #     #               self.n_timesteps)[..., self.n_timesteps - 1]
+        if self.hankel:
+            # G_for_pred = G_for_pred.reshape(*G_for_pred.shape[:-1],
+            #                                 G_for_pred.shape[-1]// self.n_timesteps,
+            #                                 self.n_timesteps)[..., self.n_timesteps - 1]
+            # g = g.reshape(*g.shape[:-1],
+            #               g.shape[-1]// self.n_timesteps,
+            #               self.n_timesteps)[..., self.n_timesteps - 1]
+            #
+            # g_for_koop = g_for_koop.reshape(*g_for_koop.shape[:-1],
+            #               g_for_koop.shape[-1]// self.n_timesteps,
+            #               self.n_timesteps)
+            #Option 2: with hankel structure.
+            G_for_pred = G_for_pred.reshape(*G_for_pred.shape[:-1],
+                                            G_for_pred.shape[-1])
+            g = g.reshape(*g.shape[:-1],
+                          g.shape[-1]//self.n_timesteps,
+                          self.n_timesteps)[..., self.n_timesteps - 1]
 
 
         # Option 1: use the koopman object decoder
@@ -366,7 +437,7 @@ class RecKoopmanModel(BaseModel):
         o.append(A)
         o.append(B)
 
-        # u = u.reshape(*u.shape[:2], self.u_dim, self.n_timesteps)[..., -1] #TODO:HANKEL This is for hankel view
+        u = u.reshape(*u.shape[:2], self.u_dim, self.n_timesteps)[..., -1]
         o.append(u.reshape(bs * self.n_objects, -1, u.shape[-1]))
         o.append(u_dist.reshape(bs * self.n_objects, -1, *u_dist.shape[-1:])) #Append udist for categorical
         # o.append(u_dist.reshape(bs * self.n_objects, -1, *u_dist.shape[-2:]))

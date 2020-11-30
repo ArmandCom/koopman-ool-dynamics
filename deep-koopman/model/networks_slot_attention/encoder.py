@@ -91,12 +91,12 @@ class ImageEncoder(nn.Module):
         x = self.mlp(x) #self.norm(x)
         # TODO: check out if the norm is fucking something up
 
-        if reverse:
-            x_rev = torch.flip(x.reshape(bs, T, *x.shape[1:]), dims=[1])
-            x = x.reshape(bs, T, *x.shape[1:])
-            x = torch.stack([x, x_rev], dim=1)
-            bs = 2*bs
-            x = x.reshape(bs * T, *x.shape[3:])
+        # if reverse:
+        #     x_rev = torch.flip(x.reshape(bs, T, *x.shape[1:]), dims=[1])
+        #     x = x.reshape(bs, T, *x.shape[1:])
+        #     x = torch.stack([x, x_rev], dim=1)
+        #     bs = 2*bs
+        #     x = x.reshape(bs * T, *x.shape[3:])
 
         x = x.reshape(bs, T, *x.shape[1:]).permute(0,3,1,2)
         x = x.reshape(*x.shape[:-1], int(np.sqrt(x.shape[-1])), int(np.sqrt(x.shape[-1])))

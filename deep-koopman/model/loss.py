@@ -149,6 +149,11 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
 
     '''Low rank G'''
     # Option 1:
+    if epoch_iter[0] < n_iters_start:
+        lambd_1 = 0.1
+    else:
+        lambd_1 = 2
+
     # T = g_for_koop.shape[1]
     # n_timesteps = g_for_koop.shape[-1]
     # g_for_koop = g_for_koop.permute(0, 2, 1, 3).reshape(-1, T-1, n_timesteps)
@@ -160,13 +165,9 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     #     logdet_H = torch.slogdet(g_for_koop[..., t:t+n_timesteps, :] + reg_mask)
     #     h_rank_loss = h_rank_loss + .01*(logdet_H[1]).mean()
 
-    if epoch_iter[0] < n_iters_start:
-        lambd_1 = 0.1
-    else:
-        lambd_1 = 0.1
-    h_rank_loss = lambd_1 * (l1_loss(A, torch.zeros_like(A)).mean(0).sum()
-                           + l1_loss(B, torch.zeros_like(B)).mean(0).sum())
-
+    h_rank_loss = (l1_loss(A, torch.zeros_like(A)).sum(-1).sum(-1).mean()
+                           + l1_loss(B, torch.zeros_like(B)).sum(-1).sum(-1).mean())
+    h_rank_loss = lambd_1 * h_rank_loss
     '''Input sparsity loss
         u: [bs, T, feat_dim]
     '''
@@ -176,14 +177,22 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     #        mse_loss(u, torch.ones_like(u)*0.5).sum(-1).sum(-1).mean())
     # Option 2: Penalize activations
     if epoch_iter[0] < n_iters_start:
-        lambd_2 = 0.1
+        lambd_2 = .1
     else:
-        lambd_2 = 1.5
-    l1_u = lambd_2 * l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
+        lambd_2 = 1
+    l1_u = l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
     # Option 3: Penalize if a specific dimension has a single activation in it,
     #  but it doesn't matter how many timesteps.
     # u_max, _ = torch.max(u, dim=1)
     # l1_u = 50 * l1_loss(u_max, torch.zeros_like(u_max)).sum(-1).mean()
+    # Option 4: Sequential Temporal, and feature sparsity
+    # l1_u_T = -((u[:, 1:] + u[:, :-1]) * l1_loss(u[:, 1:], u[:, :-1])).sum(-1).sum(-1).mean()
+    # u_ones = torch.ones_like(u)
+    # l1_u_T_flat = -((u_ones[:, 1:] - (u[:, 1:] + u[:, :-1])) * (u_ones[:, 1:] - l1_loss(u[:, 1:], u[:, :-1]))).sum(-1).sum(-1).mean()
+
+    # l1_u_F = -(((u[:, :, 1:] + u[:, :, :-1]) * l1_loss(u[:, :, 1:], u[:, :, :-1]))**2).sum(-1).sum(-1).mean()
+
+    l1_u = lambd_2 * (l1_u) # + l1_u_T + l1_u_T_flat + l1_u_F
 
     '''Rec and pred losses'''
     rec_loss = 10 * mse_loss(rec, target[:, -rec.shape[1]:]) \
@@ -207,7 +216,7 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     if epoch_iter[0] < n_iters_start:
         lambd_3 = 0
     else:
-        lambd_3 = 10
+        lambd_3 = 0
     g = g[:, :rec.shape[1]]
     local_geo_loss = lambd_3 * local_geo(g, target[:, -g.shape[1]:])
 
@@ -215,14 +224,14 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     if epoch_iter[0] < n_iters_start:
         lambd_4 = 0
     else:
-        lambd_4 = 100
+        lambd_4 = 0
     fit_error = lambd_4 * fit_error
 
     '''Total Loss'''
     loss = (  rec_loss
             + pred_loss
             + kl_loss
-            + h_rank_loss
+            # + h_rank_loss
             + l1_u
             # + fit_error
             # + local_geo_loss
@@ -233,8 +242,8 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
                   'H rank Loss':h_rank_loss,
                   #'A diag loss':loss_A,
                   # #'G Pred Loss':g_mse_loss,
-                  'G Pred Loss':fit_error,
-                  'Local geo Loss':local_geo_loss,
+                  # 'G Pred Loss':fit_error,
+                  # 'Local geo Loss':local_geo_loss,
                   'KL Loss':kl_loss,
                   'l1_u':l1_u,
                   }

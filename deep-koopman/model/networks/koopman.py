@@ -277,7 +277,6 @@ class KoopmanOperators(nn.Module, ABC):
         """ state encoder """
         # u_dist = self.nlinear_u_mapping(states.reshape(-1, states.shape[-1]))
         u_dist, _ = self.gru_u_mapping(states)
-        print('U_dist dimension!: ', u_dist.shape)
         u_dist = u_dist.reshape(*states.shape[:-1], -1)
         u = F.sigmoid(u_dist * temp)
 
@@ -314,7 +313,6 @@ class KoopmanOperators(nn.Module, ABC):
         assert D % self.num_blocks == 0
         block_size = D // self.num_blocks
         a_block_size = a_dim // self.num_blocks
-
         G, H, U = G.reshape(bs, T, N, -1, block_size), \
                   H.reshape(bs, T, N, -1, block_size), \
                   U.reshape(bs, T, N, -1, a_block_size)

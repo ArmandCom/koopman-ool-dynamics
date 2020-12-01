@@ -152,7 +152,7 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     if epoch_iter[0] < n_iters_start:
         lambd_1 = 0.1
     else:
-        lambd_1 = 2
+        lambd_1 = 10
 
     # T = g_for_koop.shape[1]
     # n_timesteps = g_for_koop.shape[-1]
@@ -177,10 +177,13 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     #        mse_loss(u, torch.ones_like(u)*0.5).sum(-1).sum(-1).mean())
     # Option 2: Penalize activations
     if epoch_iter[0] < n_iters_start:
-        lambd_2 = .1
+        lambd_2 = 0
     else:
-        lambd_2 = 1
-    l1_u = l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
+        lambd_2 = 0.5
+        up_bound = 2
+    # l1_u = - l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).sum(-1).sum(-1).mean()
+    l1_u = F.relu(up_bound -
+            l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).sum(-1).sum(-1).mean())
     # Option 3: Penalize if a specific dimension has a single activation in it,
     #  but it doesn't matter how many timesteps.
     # u_max, _ = torch.max(u, dim=1)
@@ -231,7 +234,7 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     loss = (  rec_loss
             + pred_loss
             + kl_loss
-            # + h_rank_loss
+            + h_rank_loss
             + l1_u
             # + fit_error
             # + local_geo_loss

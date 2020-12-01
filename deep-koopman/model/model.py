@@ -247,7 +247,7 @@ class RecKoopmanModel(BaseModel):
             u = u_bw
             free_pred = self.n_timesteps - 1 + 4
         else:
-            free_pred = 1 - T//4
+            free_pred = T//4
 
         # if free_pred > 0:
         #     G_tilde = g[randperm, self.n_timesteps -1:-1-free_pred, None]

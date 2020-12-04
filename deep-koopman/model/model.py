@@ -7,7 +7,8 @@ from base import BaseModel
 #     KoopmanOperators, AttImageEncoder, ImageDecoder, \
 #     deconvSpatialDecoder, linearSpatialDecoder, LinearEncoder, ObjectAttention
 from model.networks import KoopmanOperators
-from model.networks_slot_attention import ImageEncoder, ImageDecoder
+# from model.networks_slot_attention import ImageEncoder, ImageDecoder
+from model.networks_self_attention import ImageEncoder, ImageDecoder
 # from model.networks_cswm.modules import TransitionGNN, EncoderCNNLarge, EncoderCNNMedium, EncoderCNNSmall, EncoderMLP, DecoderCNNLarge, DecoderCNNMedium, DecoderCNNSmall, DecoderMLP
 from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
@@ -128,10 +129,10 @@ class RecKoopmanModel(BaseModel):
         self.ini_alpha = 1
         self.incr_alpha = 0.25
 
-        self.linear_f_mu = nn.Linear(feat_dim * 2, feat_dim)
-        self.linear_f_logvar = nn.Linear(feat_dim * 2, feat_dim)
+        self.linear_f_mu = nn.Linear(feat_dim, feat_dim)
+        self.linear_f_logvar = nn.Linear(feat_dim, feat_dim)
 
-        self.image_encoder = ImageEncoder(in_channels, feat_dim * 2, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
+        self.image_encoder = ImageEncoder(in_channels, feat_dim, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
         self.image_decoder = ImageDecoder(feat_dim, out_channels, ngf, n_layers)
         self.koopman = KoopmanOperators(feat_dyn_dim, nf_particle, nf_effect, g_dim, u_dim, n_timesteps, n_blocks)
 
@@ -174,10 +175,13 @@ class RecKoopmanModel(BaseModel):
         bs, T, ch, h, w = input.shape
         n_dirs = 1
         f = self.image_encoder(input) # (bs * n_objects * T, feat_dim)
+
+        print('load test_2 model in epoch 5. with same parameters but '
+              'WITHOUT self attention in the decoder. Then try SA in decoder.')
+        exit()
+
         f_mu = self.linear_f_mu(f)
         f_logvar = self.linear_f_logvar(f)
-        # Concatenates the features from current time and previous to create full state
-        # f_mu, f_logvar = torch.chunk(f, 2, dim=-1)
         f = _sample_latent_simple(f_mu, f_logvar)
 
         if self.reverse:
@@ -190,17 +194,18 @@ class RecKoopmanModel(BaseModel):
         # Note: Split features (cte, dyn)
         f_dyn, f_cte = f[..., :self.feat_dyn_dim], f[..., self.feat_dyn_dim:]
         f_cte = f_cte.reshape(bs * self.n_objects, T, *f_cte.shape[1:])
+        # TODO: Average before sampling.
 
         # Test disentanglement
         # if random.random() < 0.1 or self.content is None:
         #     self.content = f_cte
         # f_cte = self.content
 
-        f = f_dyn.reshape(bs * self.n_objects, T, *f_dyn.shape[1:])
-        f, T = self._get_full_state_hankel(f, T)
+        f_dyn = f_dyn.reshape(bs * self.n_objects, T, *f_dyn.shape[1:])
+        f_dyn, T = self._get_full_state_hankel(f_dyn, T)
 
-        u, u_dist = self.koopman.to_u(f, temp=self.ini_alpha + epoch * self.incr_alpha)
-        g = self.koopman.to_g(f.reshape(bs * self.n_objects * T, -1), self.psteps)
+        u, u_dist = self.koopman.to_u(f_dyn, temp=self.ini_alpha + epoch * self.incr_alpha)
+        g = self.koopman.to_g(f_dyn.reshape(bs * self.n_objects * T, -1), self.psteps)
         g = g.reshape(bs * self.n_objects, T, *g.shape[1:])
 
         if self.reverse:
@@ -211,6 +216,8 @@ class RecKoopmanModel(BaseModel):
             g = g_bw
 
         # TODO:
+        #  0 Ho foto tot a varying y a tomar
+        #  ...
         #  0: state as velocity acceleration, pose
         #  0: g fitting error.
         #  0: Hankel view. Fuck koopman for now, it has too many degrees of freedom. Restar input para minimizar rango de H.
@@ -247,7 +254,7 @@ class RecKoopmanModel(BaseModel):
             u = u_bw
             free_pred = self.n_timesteps - 1 + 4
         else:
-            free_pred = T//4
+            free_pred = T//8
 
         # if free_pred > 0:
         #     G_tilde = g[randperm, self.n_timesteps -1:-1-free_pred, None]
@@ -265,7 +272,7 @@ class RecKoopmanModel(BaseModel):
 
         # TODO: If we identify with half of the timesteps, but use all inputs for rollout,
         #  we might get something. We can also predict only the future.
-        A, B, A_inv, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, :-1-free_pred], I_factor=self.I_factor)
+        A, B, A_inv, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, :-1-free_pred], I_factor=self.I_factor) #Note: Not permutting input, but permutting g.
         # A, B, A_inv, fit_err = self.koopman.fit_with_A(G=G_tilde, H=H_tilde, U=u[randperm, :-1], I_factor=self.I_factor)
         # A, B, A_inv, fit_err = self.koopman.fit_with_B(G=G_tilde, H=H_tilde, U=u[randperm, :-1-free_pred], I_factor=self.I_factor)
         # A, B = self.koopman.fit_with_AB(G_tilde.shape[0])
@@ -286,8 +293,13 @@ class RecKoopmanModel(BaseModel):
         #                         self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=None, A=A, B=None)], dim=1)
         # G_for_pred = self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=u[:, self.n_timesteps -1:], A=A, B=B)
         # g_for_koop = self.koopman.simulate(T=T - self.n_timesteps, g=g[:, self.n_timesteps -1], u=None, A=A, B=None)
-        G_for_pred = self.koopman.simulate(T=T - 4, g=g[:, 3], u=u, A=A, B=B)
-        g_for_koop = self.koopman.simulate(T=T - 4, g=g[:, 3], u=None, A=A, B=None)
+
+        # G_for_pred = self.koopman.simulate(T=T - 4, g=g[:, 3], u=u, A=A, B=B)
+        # g_for_koop = self.koopman.simulate(T=T - 4, g=g[:, 3], u=None, A=A, B=None)
+        G_for_pred = self.koopman.simulate(T=T - 3, g=g[:, 2], u=u, A=A, B=B)
+        # g_for_koop = self.koopman.simulate(T=T - 2, g=g[:, 1], u=None, A=A, B=None)
+        g_for_koop= G_for_pred
+        # TODO: check if this is correct. Is it generating enough samples? is it returning g[:, 1]?
 
 
         # g_for_koop = G_for_pred
@@ -318,7 +330,6 @@ class RecKoopmanModel(BaseModel):
         #     #               self.n_timesteps)[..., self.n_timesteps - 1]
 
 
-        # Option 1: use the koopman object decoder
         s_for_rec = self.koopman.to_s(gcodes=_get_flat(g),
                                       psteps=self.psteps)
         s_for_pred = self.koopman.to_s(gcodes=_get_flat(G_for_pred),
@@ -326,26 +337,51 @@ class RecKoopmanModel(BaseModel):
 
         # Note: Split features (cte, dyn). In case of reverse, f_cte averages for both directions.
         # Note 2: TODO: Reconstruction could be in reversed g's or both!
+        # Option 1: Temporally permute appearance
+        # T_randperm =  torch.randperm(g.shape[1]) # torch.arange(g.shape[1])
+        # s_for_rec = torch.cat([s_for_rec.reshape(bs * self.n_objects, T, -1),
+        #                        f_cte[:, -T:]], dim=-1)
+        # # f_cte = f_cte[:, T_randperm]
+        # f_cte = f_cte[:, None].mean(2).repeat(1, G_for_pred.shape[1], 1)
+        # s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1),
+        #                         f_cte[:, -G_for_pred.shape[1]:]], dim=-1)
+
+        # Option 2: Average appearance
+
         s_for_rec = torch.cat([s_for_rec.reshape(bs * self.n_objects, T, -1),
                               f_cte[:, None].mean(2).repeat(1, T, 1)], dim=-1)
         s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1),
                               f_cte[:, None].mean(2).repeat(1, G_for_pred.shape[1], 1)], dim=-1)
+
+
+        # # Concatenates the features from current time and previous to create full state
+        # # f_mu, f_logvar = torch.chunk(f, 2, dim=-1)
+
         s_for_rec = _get_flat(s_for_rec)
         s_for_pred = _get_flat(s_for_pred)
 
-        # Option 2: we don't use the koopman object decoder
-        # s_for_rec = _get_flat(g)
-        # s_for_pred = _get_flat(G_for_pred)
+        # NOTE: Sample after
+        # f_mu = self.linear_f_mu(s_for_rec)
+        # f_logvar = self.linear_f_logvar(s_for_rec)
+        # s_for_rec = _sample_latent_simple(f_mu, f_logvar)
+        # #
+        # f_mu_pred = self.linear_f_mu(s_for_pred)
+        # f_logvar_pred = self.linear_f_logvar(s_for_pred)
+        # s_for_pred = _sample_latent_simple(f_mu_pred, f_logvar_pred)
+        # f_mu, f_mu_pred = f_mu.reshape(bs * self.n_objects, T, -1), f_mu_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1)
+        # f_logvar, f_logvar_pred = f_logvar.reshape(bs * self.n_objects, T, -1), f_logvar_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1)
+
 
         # Convolutional decoder. Normally Spatial Broadcasting decoder
         out_rec = self.image_decoder(s_for_rec)
         out_pred = self.image_decoder(s_for_pred)
 
         returned_g = torch.cat([g, G_for_pred], dim=1)
-        returned_mus = torch.cat([f_mu], dim=-1)
-        returned_logvars = torch.cat([f_logvar], dim=-1)
-        # returned_mus = torch.cat([f_mu, a_mu], dim=-1)
-        # returned_logvars = torch.cat([f_logvar, a_logvar], dim=-1)
+
+        returned_mus = torch.cat([f_mu], dim=1)
+        returned_logvars = torch.cat([f_logvar], dim=1)
+        # returned_mus = torch.cat([f_mu, f_mu_pred], dim=1)
+        # returned_logvars = torch.cat([f_logvar, f_logvar_pred], dim=1)
 
         o_touple = (out_rec, out_pred, returned_g.reshape(-1, returned_g.size(-1)),
                     returned_mus.reshape(-1, returned_mus.size(-1)),
@@ -360,7 +396,11 @@ class RecKoopmanModel(BaseModel):
         # o[0] = o[0].reshape(*shape_o0)
 
         # o[:2] = [torch.clamp(torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:]), dim=1), min=0, max=1) for item in o[:2]]
+
+        # Test object decomposition
+        # o[:2] = [torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:])[:,0:1], dim=1) for item in o[:2]]
         o[:2] = [torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:]), dim=1) for item in o[:2]]
+
         o[3:5] = [item.reshape(bs, self.n_objects, *item.shape[1:]) for item in o[3:5]]
 
         o.append(A)
@@ -370,7 +410,7 @@ class RecKoopmanModel(BaseModel):
         o.append(u.reshape(bs * self.n_objects, -1, u.shape[-1]))
         o.append(u_dist.reshape(bs * self.n_objects, -1, *u_dist.shape[-1:])) #Append udist for categorical
         # o.append(u_dist.reshape(bs * self.n_objects, -1, *u_dist.shape[-2:]))
-        o.append(g_for_koop.reshape(bs * self.n_objects, -1, g_for_koop.shape[-1]// self.n_timesteps, self.n_timesteps))
+        o.append(g_for_koop.reshape(bs * self.n_objects, -1, g_for_koop.shape[-1]))
         o.append(fit_err)
 
         return o

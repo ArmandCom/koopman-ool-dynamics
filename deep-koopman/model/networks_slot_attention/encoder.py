@@ -17,40 +17,44 @@ class ImageEncoder(nn.Module):
     def __init__(self, in_channels, feat_dim, n_objects, ngf, n_layers):
         super(ImageEncoder, self).__init__()
 
+        activation = nn.ReLU(True)
+        # activation = nn.ELU(True)
+
         self.n_objects = n_objects
         self.feat_dim = feat_dim
         ch = 32
         self.resolution = (32, 32)
         self.cnn = nn.Sequential(
             nn.Conv2d(in_channels, ch, 5, 1, 2),  # B,  32, 32, 32
-            nn.ReLU(True),
+            activation,
             nn.Conv2d(ch, ch, 5, 2, 2),  # B,  32, 16, 16
-            nn.ReLU(True))
+            activation)
 
         self.cnn2 = nn.Sequential(
             nn.Conv2d(ch, ch, 5, 2, 2),  # B,  64,  8,  8
-            nn.ReLU(True),
+            activation,
             nn.Conv2d(ch, ch, 5, 2, 2),  # B,  64,  4,  4
-            nn.ReLU(True),
+            activation,
             nn.Conv2d(ch, ch, 5, 2, 2),  # B, 256,  1,  1
-            nn.ReLU(True),
+            activation,
             nn.Conv2d(ch, ch, 5, 2, 2),  # B, 256,  1,  1
-            nn.ReLU(True),
+            activation,
             nn.Conv2d(ch, n_objects * feat_dim, 5, 2, 2),  # B, 256,  1,  1
-            nn.ReLU(True)
+            activation
         )
         # nn.ReplicationPad3d((1, 1, 2, 2, 2, 2))
         self.cnn3 = nn.Sequential(
             nn.Conv3d(ch, ch, [3, 5, 5], [1, 2, 2], [1, 2, 2]),
-            nn.ReLU(True),
+            # nn.Conv3d(ch, ch, [5, 9, 9], [1, 2, 2], [2, 4, 4]),
+            activation,
             nn.Conv3d(ch, ch, [3, 5, 5], [1, 2, 2], [1, 2, 2]),
-            nn.ReLU(True),
+            activation,
             nn.Conv3d(ch, ch, [3, 5, 5], [1, 2, 2], [1, 2, 2]),
-            nn.ReLU(True),
+            activation,
             nn.Conv3d(ch, ch, [3, 5, 5], [1, 2, 2], [1, 2, 2]),
-            nn.ReLU(True),
+            activation,
             nn.Conv3d(ch, n_objects * feat_dim, [3, 5, 5], [1, 2, 2], [1, 2, 2]),
-            nn.ReLU(True)
+            activation
         )
         # x = x.permute(0, 2, 1, 3, 4)
         # x = self.cnn3(x)
@@ -64,7 +68,7 @@ class ImageEncoder(nn.Module):
         self.norm = nn.LayerNorm(ch)
 
         self.mlp = nn.Sequential(nn.Linear(ch, ch),
-                                 nn.ReLU(True),
+                                 activation,
                                  nn.Linear(ch, ch))
 
         # self.slot_attention = SlotAttention(n_objects, feat_dim)

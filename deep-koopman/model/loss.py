@@ -103,8 +103,12 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
                                                output[4], output[5], output[6], \
                                                 output[7], output[8], output[9], output[10]
 
+    bs = rec.shape[0]
     '''Simple KL loss for reconstruction'''
-    kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(dim=-1).mean()#.sum(dim=1)
+    # a = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+    # Shape latent: [bs, n_obj, T, dim]
+    kl = -0.5 * (1 + logvar - mu**2 - logvar.exp())
+    kl_loss = kl.permute(0, 2, 1, 3).reshape(bs * mu.shape[2], -1).sum(-1).mean()
     '''Discrete input'''
     # Option 1:
     # log_qy = torch.log(qy+1e-20)
@@ -177,13 +181,18 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     #        mse_loss(u, torch.ones_like(u)*0.5).sum(-1).sum(-1).mean())
     # Option 2: Penalize activations
     if epoch_iter[0] < n_iters_start:
-        lambd_2 = 0
+        lambd_2 = 1
     else:
-        lambd_2 = 0.5
-        up_bound = 2
+        lambd_2 = 5
+    up_bound = 0.2
     # l1_u = - l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).sum(-1).sum(-1).mean()
-    l1_u = F.relu(up_bound -
-            l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).sum(-1).sum(-1).mean())
+    # l1_u = F.relu(up_bound -
+    #               l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).mean())
+    l1_u_sparse = F.relu(l1_loss(u, torch.zeros_like(u)).mean() - up_bound)
+    # Should do mean between features of u.
+
+    # l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
+
     # Option 3: Penalize if a specific dimension has a single activation in it,
     #  but it doesn't matter how many timesteps.
     # u_max, _ = torch.max(u, dim=1)
@@ -195,12 +204,11 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
 
     # l1_u_F = -(((u[:, :, 1:] + u[:, :, :-1]) * l1_loss(u[:, :, 1:], u[:, :, :-1]))**2).sum(-1).sum(-1).mean()
 
-    l1_u = lambd_2 * (l1_u) # + l1_u_T + l1_u_T_flat + l1_u_F
+    l1_u = lambd_2 * (l1_u_sparse) # + l1_u_T + l1_u_T_flat + l1_u_F
 
     '''Rec and pred losses'''
-    rec_loss = 10 * mse_loss(rec, target[:, -rec.shape[1]:]) \
-        .view(rec.size(0)*(rec.size(1)), -1).sum(dim=-1).mean()
-    # pred_loss = torch.zeros(1)
+    # Shape latent: [bs, T-n_timesteps+1, 1, 64, 64]
+    rec_loss = 10 * mse_loss(rec, target[:, -rec.shape[1]:]).reshape(bs * rec.shape[1], -1).sum(-1).mean()
 
     # if epoch_iter[0] < n_iters_start:
     #     lambd_pred = 1
@@ -208,18 +216,16 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     #     lambd_pred = 0
     free_pred = 0
     if free_pred < 1:
-        pred_loss = 10 * mse_loss(pred, target[:, -pred.shape[1]:]) \
-            .view(pred.size(0) * (pred.size(1)), -1).sum(dim=-1).mean()
+        pred_loss = 10 * mse_loss(pred, target[:, -pred.shape[1]:]).reshape(bs * pred.shape[1], -1).sum(-1).mean()
     else:
-        pred_loss = 10 * mse_loss(pred[:, :-free_pred], target[:, -pred.shape[1]:-free_pred]) \
-            .view(pred.size(0)*(pred.size(1)-free_pred), -1).sum(dim=-1).mean()
+        pred_loss = 10 * mse_loss(pred[:, :-free_pred], target[:, -pred.shape[1]:-free_pred]).reshape(bs * pred.shape[1], -1).sum(-1).mean()
 
     '''Local geometry loss'''
     # local_geo_loss = torch.zeros(1)
     if epoch_iter[0] < n_iters_start:
-        lambd_3 = 0
+        lambd_3 = 1
     else:
-        lambd_3 = 0
+        lambd_3 = 1
     g = g[:, :rec.shape[1]]
     local_geo_loss = lambd_3 * local_geo(g, target[:, -g.shape[1]:])
 

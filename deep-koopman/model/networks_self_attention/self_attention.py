@@ -29,6 +29,7 @@ class Self_Attn(nn.Module):
                 out : self attention value + input feature
                 attention: B X N X N (N is Width*Height)
         """
+
         m_batchsize, C, width, height = x.size()
         proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)  # B X CX(N)
         proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)  # B X C x (*W*H)
@@ -40,24 +41,30 @@ class Self_Attn(nn.Module):
         out = out.view(m_batchsize, C, width, height)
 
         out = self.gamma * out + x
+        # print('spa gamma: ', self.gamma.item())
+
         return out#, attention
 
 class Temporal_Self_Attn(nn.Module):
     """ Self attention Layer"""
     # TODO: Create spatiotemporal attention network by unfolding
     def __init__(self, in_dim, activation):
-        super(Self_Attn, self).__init__()
+        super(Temporal_Self_Attn, self).__init__()
         self.chanel_in = in_dim
         self.activation = activation
+        temp_kernel_size = 3
 
+        self.temp_kernel_size = temp_kernel_size
+        self.unfold = nn.Unfold(kernel_size=[temp_kernel_size,1], padding=[temp_kernel_size//2,0])
         self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
         self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
         self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
         self.gamma = nn.Parameter(torch.zeros(1))
 
+
         self.softmax = nn.Softmax(dim=-1)  #
 
-    def forward(self, x):
+    def forward(self, x, T_inp=None):
         """
             inputs :
                 x : input feature maps( B X C X W X H)
@@ -65,15 +72,33 @@ class Temporal_Self_Attn(nn.Module):
                 out : self attention value + input feature
                 attention: B X N X N (N is Width*Height)
         """
-        m_batchsize, C, width, height = x.size()
-        proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)  # B X CX(N)
-        proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)  # B X C x (*W*H)
+        if T_inp is not None:
+            m_batchsize_T, C, width, height = x.size()
+            m_batchsize = m_batchsize_T // T_inp
+            T = T_inp
+            x = x.reshape(m_batchsize, T, C, width, height).permute(0, 2, 1, 3, 4)
+        else:
+            m_batchsize, C, T, width, height = x.size()
+        x_unf = self.unfold(x.reshape(m_batchsize, C, T, -1))
+        # x_prime = x_unf.reshape(m_batchsize, C, 3, T, width, height)[:, :, 1] # This is exactly the same as x
+        x_unf = x_unf.reshape(m_batchsize, C, self.temp_kernel_size, T, width * height)\
+                .permute(0, 3, 1, 2, 4).reshape(m_batchsize * T, C, 1, -1)
+        x_flat = x.permute(0, 2, 1, 3, 4).reshape(m_batchsize * T, C, 1, -1)
+
+        # TODO: ReflectionPad3d.
+        # After check dimensions of attention and value. Attention should map value to initial size.
+
+        # Query from the current frame. Value and key from all (unfolded)
+        proj_query = self.query_conv(x_flat).view(m_batchsize * T, -1, width * height).permute(0, 2, 1)  # B X CX(N)
+        proj_key = self.key_conv(x_unf).view(m_batchsize * T, -1, self.temp_kernel_size * width * height)  # B X C x (*W*H)
         energy = torch.bmm(proj_query, proj_key)  # transpose check
         attention = self.softmax(energy)  # BX (N) X (N)
-        proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)  # B X C X N
-
+        proj_value = self.value_conv(x_unf).view(m_batchsize * T, -1, self.temp_kernel_size * width * height)  # B X C X N
         out = torch.bmm(proj_value, attention.permute(0, 2, 1))
-        out = out.view(m_batchsize, C, width, height)
+        out = out.view(m_batchsize, T, C, width, height).permute(0, 2, 1, 3, 4)
+        out = self.gamma *out + x # self.gamma *
+        # print('temp gamma: ', self.gamma.item())
+        if T_inp is not None:
+            out = out.permute(0, 2, 1, 3, 4).reshape(m_batchsize_T, C, width, height)
 
-        out = self.gamma * out + x
-        return out, attention
+        return out#, attention

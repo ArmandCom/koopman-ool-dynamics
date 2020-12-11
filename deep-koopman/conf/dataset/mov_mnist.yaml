@@ -2,10 +2,10 @@ name: "Koopman_Disentanglement"
 n_gpu: 1
 
 # Global variables
-n_timesteps: &NTS 2 # Number of timesteps seen in each state. Time length of the state
+n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
 image_size: &IS [64, 64] # Input image size
-seq_length: &SeqL 10 # Length of the observed sequence.
-n_objects: &Nobj 1
+seq_length: &SeqL 15 # Length of the observed sequence.
+n_objects: &Nobj 2
 
 log_step: 50
 
@@ -17,12 +17,12 @@ arch:
   args:
     in_channels: 1
     feat_dim: &Fdim 30
-    g_dim: &Gdim 12
-    u_dim: 4
+    g_dim: &Gdim 10
+    u_dim: 2
     n_objects: *Nobj
     I_factor: 0.01
-    n_blocks: 4
-    nf_particle: &Hdim 20
+    n_blocks: 1
+    nf_particle: &Hdim 10
     nf_effect: *Hdim
     psteps: 1
     n_timesteps: *NTS
@@ -48,8 +48,9 @@ data_loader:
 optimizer:
   type: "Adam"
   args:
-    lr: 0.0003
-    weight_decay: 0.0
+    lr: 0.001
+    betas: [0.9, 0.999]
+    weight_decay: 0.0001
     amsgrad: true
 
 #optimizer:
@@ -66,7 +67,7 @@ metrics: [] #["accuracy", "top_k_acc"]
 lr_scheduler:
   type: "StepLR"
   args:
-    step_size: 7
+    step_size: 10
     gamma: 0.3
 
 #lr_scheduler:
@@ -81,7 +82,7 @@ lr_scheduler:
 trainer:
   epochs: 100
   save_dir: ""
-  save_period: 2
+  save_period: 1
   verbosity: 2
   monitor: "min val_loss"
   early_stop: 10

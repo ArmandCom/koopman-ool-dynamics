@@ -156,7 +156,7 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     if epoch_iter[0] < n_iters_start:
         lambd_1 = 0.1
     else:
-        lambd_1 = 10
+        lambd_1 = 5
 
     # T = g_for_koop.shape[1]
     # n_timesteps = g_for_koop.shape[-1]
@@ -188,7 +188,9 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     # l1_u = - l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).sum(-1).sum(-1).mean()
     # l1_u = F.relu(up_bound -
     #               l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).mean())
-    l1_u_sparse = F.relu(l1_loss(u, torch.zeros_like(u)).mean() - up_bound)
+
+    # l1_u_sparse = F.relu(l1_loss(u, torch.zeros_like(u)).mean() - up_bound)
+    l1_u_diff_sparse = F.relu(l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).mean() - up_bound)
     # Should do mean between features of u.
 
     # l1_loss(u, torch.zeros_like(u)).sum(-1).sum(-1).mean()
@@ -204,7 +206,7 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
 
     # l1_u_F = -(((u[:, :, 1:] + u[:, :, :-1]) * l1_loss(u[:, :, 1:], u[:, :, :-1]))**2).sum(-1).sum(-1).mean()
 
-    l1_u = lambd_2 * (l1_u_sparse) # + l1_u_T + l1_u_T_flat + l1_u_F
+    l1_u = lambd_2 * l1_u_diff_sparse # + l1_u_T + l1_u_T_flat + l1_u_F
 
     '''Rec and pred losses'''
     # Shape latent: [bs, T-n_timesteps+1, 1, 64, 64]

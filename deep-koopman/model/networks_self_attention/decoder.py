@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from .self_attention import Self_Attn
+from .self_attention import Self_Attn, Temporal_Self_Attn
 
 # class ImageDecoder(nn.Module):
 #   """Generator."""

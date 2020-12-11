@@ -40,7 +40,7 @@ class MovingMNISTDataset(data.Dataset):
         #     else:
         #         self.dataset = load_fixed_set(root, False)
 
-        self.length = 1e5
+        self.length = 2e4
         idx_full = np.arange(self.length)
         np.random.seed(0)
         np.random.shuffle(idx_full)
@@ -66,7 +66,7 @@ class MovingMNISTDataset(data.Dataset):
         # For generating data
         self.image_size_ = 64
         self.digit_size_ = 28
-        self.step_length_ = 0.2
+        self.step_length_ = 0.18
 
     def get_random_trajectory(self, seq_length):
         ''' Generate a random sequence of a MNIST digit '''
@@ -76,7 +76,7 @@ class MovingMNISTDataset(data.Dataset):
         theta = random.random() * 2 * np.pi
         v_y = np.sin(theta)
         v_x = np.cos(theta)
-        v_x = 0
+        # v_x = 0
 
         start_y = np.zeros(seq_length)
         start_x = np.zeros(seq_length)

@@ -250,13 +250,13 @@ class KoopmanOperators(nn.Module, ABC):
         # self.step = self.linear_forward
 
         self.A_reg = torch.eye(g_dim // n_blocks).unsqueeze(0)
-        self.A = nn.Parameter(torch.ones(1, 1, n_blocks, g_dim // n_blocks, g_dim // n_blocks)
-                              / (g_dim // n_blocks))
-        # self.B = nn.Parameter(torch.ones(1, 1, n_blocks, u_dim // n_blocks, g_dim // n_blocks)
+        # self.A = nn.Parameter(torch.ones(1, 1, n_blocks, g_dim // n_blocks, g_dim // n_blocks)
         #                       / (g_dim // n_blocks))
-        self.B = nn.Parameter(torch.ones(1, 1, n_blocks, u_dim // n_blocks,
-                                         (g_dim * n_timesteps) // n_blocks)
-                                        / ((g_dim * n_timesteps) // n_blocks))
+        # # self.B = nn.Parameter(torch.ones(1, 1, n_blocks, u_dim // n_blocks, g_dim // n_blocks)
+        # #                       / (g_dim // n_blocks))
+        # self.B = nn.Parameter(torch.ones(1, 1, n_blocks, u_dim // n_blocks,
+        #                                  (g_dim * n_timesteps) // n_blocks)
+        #                                 / ((g_dim * n_timesteps) // n_blocks))
 
         self.system_identify = self.fit_block_diagonal
         self.simulate = self.rollout_block_diagonal
@@ -313,6 +313,7 @@ class KoopmanOperators(nn.Module, ABC):
         assert D % self.num_blocks == 0
         block_size = D // self.num_blocks
         a_block_size = a_dim // self.num_blocks
+
         G, H, U = G.reshape(bs, T, N, -1, block_size), \
                   H.reshape(bs, T, N, -1, block_size), \
                   U.reshape(bs, T, N, -1, a_block_size)

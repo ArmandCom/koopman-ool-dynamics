@@ -122,12 +122,12 @@ class RecKoopmanModel(BaseModel):
         # self.rnn_f_cte = nn.LSTM(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim, 1, bias=False, batch_first=True)
         # self.rnn_f_cte = nn.GRU(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim, 1, bias=False, batch_first=True)
 
-        self.linear_f_mu = nn.Linear(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim)
-        self.linear_f_logvar = nn.Linear(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim)
-        self.linear_f_dyn_mu = nn.Linear(feat_dyn_dim, feat_dyn_dim)
-        self.linear_f_dyn_logvar = nn.Linear(feat_dyn_dim, feat_dyn_dim)
-        # self.linear_f_mu = nn.Linear(feat_dim, feat_dim)
-        # self.linear_f_logvar = nn.Linear(feat_dim, feat_dim)
+        # self.linear_f_mu = nn.Linear(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim)
+        # self.linear_f_logvar = nn.Linear(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim)
+        # self.linear_f_dyn_mu = nn.Linear(feat_dyn_dim, feat_dyn_dim)
+        # self.linear_f_dyn_logvar = nn.Linear(feat_dyn_dim, feat_dyn_dim)
+        self.linear_f_mu = nn.Linear(feat_dim, feat_dim)
+        self.linear_f_logvar = nn.Linear(feat_dim, feat_dim)
 
         self.image_encoder = ImageEncoder(in_channels, feat_dim, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
         self.image_decoder = ImageDecoder(feat_dim, out_channels, ngf, n_layers)
@@ -173,34 +173,34 @@ class RecKoopmanModel(BaseModel):
         free_pred = T//4
         f = self.image_encoder(input) # (bs * n_objects * T, feat_dim)
 
-        # Mean before sampling
-        f_cte = f.reshape(bs * self.n_objects, T, *f.shape[1:])\
-                [..., self.feat_dyn_dim:]
-        f_cte = f_cte.mean(1)
-        # LSTM to obtain cte
-        # h0 = torch.zeros_like(f_cte[:, 0])[None]
-        # c0 = torch.zeros_like(f_cte[:, 0])[None]
-        # f_cte, _ = self.rnn_f_cte(f_cte[:, :-free_pred], (h0, c0))
-        # f_cte = f_cte[:, -1]
-        f_mu_cte, f_logvar_cte = self.linear_f_mu(f_cte)[:, None].repeat(1, T, 1).reshape(bs * self.n_objects * T, -1), \
-                                 self.linear_f_logvar(f_cte)[:, None].repeat(1, T, 1).reshape(bs * self.n_objects * T, -1)
-        f_cte =  _sample_latent_simple(f_mu_cte, f_logvar_cte)
-        #
-        f_dyn = f[..., :self.feat_dyn_dim]
-        f_mu_dyn, f_logvar_dyn = self.linear_f_dyn_mu(f_dyn), \
-                                 self.linear_f_dyn_logvar(f_dyn)
-        f_dyn = _sample_latent_simple(f_mu_dyn, f_logvar_dyn)
-        #
-        f_mu = torch.cat([f_mu_dyn, f_mu_cte], dim=-1)
-        f_logvar = torch.cat([f_logvar_dyn, f_logvar_cte], dim=-1)
+        # Option 1: Mean before sampling
+        # f_cte = f.reshape(bs * self.n_objects, T, *f.shape[1:])\
+        #         [..., self.feat_dyn_dim:]
+        # f_cte = f_cte.mean(1)
+        # # LSTM to obtain cte
+        # # h0 = torch.zeros_like(f_cte[:, 0])[None]
+        # # c0 = torch.zeros_like(f_cte[:, 0])[None]
+        # # f_cte, _ = self.rnn_f_cte(f_cte[:, :-free_pred], (h0, c0))
+        # # f_cte = f_cte[:, -1]
+        # f_mu_cte, f_logvar_cte = self.linear_f_mu(f_cte)[:, None].repeat(1, T, 1).reshape(bs * self.n_objects * T, -1), \
+        #                          self.linear_f_logvar(f_cte)[:, None].repeat(1, T, 1).reshape(bs * self.n_objects * T, -1)
+        # f_cte =  _sample_latent_simple(f_mu_cte, f_logvar_cte)
+        # #
+        # f_dyn = f[..., :self.feat_dyn_dim]
+        # f_mu_dyn, f_logvar_dyn = self.linear_f_dyn_mu(f_dyn), \
+        #                          self.linear_f_dyn_logvar(f_dyn)
+        # f_dyn = _sample_latent_simple(f_mu_dyn, f_logvar_dyn)
+        # #
+        # f_mu = torch.cat([f_mu_dyn, f_mu_cte], dim=-1)
+        # f_logvar = torch.cat([f_logvar_dyn, f_logvar_cte], dim=-1)
 
-        # Sampling all together
-        # f_mu = self.linear_f_mu(f)
-        # f_logvar = self.linear_f_logvar(f)
-        # f = _sample_latent_simple(f_mu, f_logvar)
-        # # Note: Split features (cte, dyn)
-        # f_dyn, f_cte = f[..., :self.feat_dyn_dim], f[..., self.feat_dyn_dim:]
-        # f_cte = f_cte.reshape(bs * self.n_objects, T, *f_cte.shape[1:])
+        # Option 2: Sampling all together
+        f_mu = self.linear_f_mu(f)
+        f_logvar = self.linear_f_logvar(f)
+        f = _sample_latent_simple(f_mu, f_logvar)
+        # Note: Split features (cte, dyn)
+        f_dyn, f_cte = f[..., :self.feat_dyn_dim], f[..., self.feat_dyn_dim:]
+        f_cte = f_cte.reshape(bs * self.n_objects, T, *f_cte.shape[1:])
 
         # Test disentanglement
         # if random.random() < 0.1 or self.content is None:
@@ -283,15 +283,13 @@ class RecKoopmanModel(BaseModel):
         # G_for_pred = self.koopman.simulate(T=T - 4, g=g[:, 3], u=u, A=A, B=B)
         # g_for_koop = self.koopman.simulate(T=T - 4, g=g[:, 3], u=None, A=A, B=None)
         g_start, T_start = g[:, 2], T-3
-        G_for_pred = self.koopman.simulate(T=T_start, g=g_start, u=u, A=A, B=B)
+        G_for_pred = self.koopman.simulate(T=T_start, g=g_start, u=u[!], A=A, B=B) # TODO: ATTENTION. U MIGHT NOT BE ALIGNED TEMPORALLY!
         # g_for_koop = self.koopman.simulate(T=T - 2, g=g[:, 1], u=None, A=A, B=None)
         g_for_koop= G_for_pred
-        # TODO: check if this is correct. Is it generating enough samples? is it returning g[:, 1]?
 
 
         # g_for_koop = G_for_pred
 
-        # TODO: create recursive rollout. We obtain the input at each step from g
         # G_for_pred = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A, B=None)
         '''Simple version of the reverse rollout'''
         # G_for_pred_rev = self.koopman.simulate(T=T - 1, g=g[:, 0], u=None, A=A_pinv, B=None)
@@ -324,10 +322,10 @@ class RecKoopmanModel(BaseModel):
         # s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1),
         #                         f_cte[:, -G_for_pred.shape[1]:]], dim=-1)
         # Option 2: Average appearance
-        # s_for_rec = torch.cat([s_for_rec.reshape(bs * self.n_objects, T, -1),
-        #                       f_cte[:, None].mean(2).repeat(1, T, 1)], dim=-1)
-        # s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1),
-        #                       f_cte[:, None].mean(2).repeat(1, G_for_pred.shape[1], 1)], dim=-1)
+        s_for_rec = torch.cat([s_for_rec.reshape(bs * self.n_objects, T, -1),
+                              f_cte[:, None].mean(2).repeat(1, T, 1)], dim=-1)
+        s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1),
+                              f_cte[:, None].mean(2).repeat(1, G_for_pred.shape[1], 1)], dim=-1)
         # Option 3: Copy the first appearance (or a random one)
         # s_for_rec = torch.cat([s_for_rec.reshape(bs * self.n_objects, T, -1),
         #                        f_cte[:, 0:1].repeat(1, T, 1)], dim=-1)
@@ -335,14 +333,14 @@ class RecKoopmanModel(BaseModel):
         #                         f_cte[:, -G_for_pred.shape[1]:-G_for_pred.shape[1]+1].repeat(1, G_for_pred.shape[1], 1)], dim=-1)
 
         # Option 4: If f_cte has been computed before.
-        f_cte = f_cte.reshape(bs * self.n_objects, -1, f_cte.shape[-1])
-        s_for_rec = torch.cat([s_for_rec.reshape(bs * self.n_objects, T, -1),
-                               f_cte[:, -T:]], dim=-1)
-        s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1),
-                                f_cte[:, -G_for_pred.shape[1]:]], dim=-1)
-
-        s_for_rec = _get_flat(s_for_rec)
-        s_for_pred = _get_flat(s_for_pred)
+        # f_cte = f_cte.reshape(bs * self.n_objects, -1, f_cte.shape[-1])
+        # s_for_rec = torch.cat([s_for_rec.reshape(bs * self.n_objects, T, -1),
+        #                        f_cte[:, -T:]], dim=-1)
+        # s_for_pred = torch.cat([s_for_pred.reshape(bs * self.n_objects, G_for_pred.shape[1], -1),
+        #                         f_cte[:, -G_for_pred.shape[1]:]], dim=-1)
+        #
+        # s_for_rec = _get_flat(s_for_rec)
+        # s_for_pred = _get_flat(s_for_pred)
 
         # NOTE: Sample after
         # f_mu = self.linear_f_mu(s_for_rec)

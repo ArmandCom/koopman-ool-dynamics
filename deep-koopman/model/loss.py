@@ -107,8 +107,18 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     '''Simple KL loss for reconstruction'''
     # a = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
     # Shape latent: [bs, n_obj, T, dim]
-    kl = -0.5 * (1 + logvar - mu**2 - logvar.exp())
-    kl_loss = kl.permute(0, 2, 1, 3).reshape(bs * mu.shape[2], -1).sum(-1).mean()
+
+    # mu, logvar = mu[:-1], logvar[:-1]
+    kl_loss = 0
+    for (m, lv) in zip(mu, logvar):
+        kl = -0.5 * (1 + lv - m**2 - lv.exp())
+        kl_loss = kl_loss + kl.sum(-1).mean()
+
+    # Note:
+    #  - Old way. Sum in object dim. This is correct.
+    # kl = -0.5 * (1 + logvar - mu**2 - logvar.exp())
+    # kl_loss = kl.permute(0, 2, 1, 3).reshape(bs * mu.shape[2], -1).sum(-1).mean()
+
     '''Discrete input'''
     # Option 1:
     # log_qy = torch.log(qy+1e-20)
@@ -156,7 +166,7 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     if epoch_iter[0] < n_iters_start:
         lambd_1 = 0.1
     else:
-        lambd_1 = 5
+        lambd_1 = 2
 
     # T = g_for_koop.shape[1]
     # n_timesteps = g_for_koop.shape[-1]
@@ -221,6 +231,7 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
         pred_loss = 10 * mse_loss(pred, target[:, -pred.shape[1]:]).reshape(bs * pred.shape[1], -1).sum(-1).mean()
     else:
         pred_loss = 10 * mse_loss(pred[:, :-free_pred], target[:, -pred.shape[1]:-free_pred]).reshape(bs * pred.shape[1], -1).sum(-1).mean()
+    pred_loss = torch.clamp(pred_loss, 0, 10000)
 
     '''Local geometry loss'''
     # local_geo_loss = torch.zeros(1)
@@ -242,7 +253,7 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     loss = (  rec_loss
             + pred_loss
             + kl_loss
-            + h_rank_loss
+            # + h_rank_loss
             + l1_u
             # + fit_error
             # + local_geo_loss

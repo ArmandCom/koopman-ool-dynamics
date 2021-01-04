@@ -53,6 +53,15 @@ class Trainer(BaseTrainer):
             output = self.model(data, epoch)
             loss, loss_particles = self.criterion(output, target,
                                                   epoch_iter=(epoch, (epoch + 1)*batch_idx), lambd=self.config["trainer"]["lambd"])
+            loss = loss.mean()
+
+            # Note: from space implementation
+            # optimizer_fg.zero_grad()
+            # optimizer_bg.zero_grad()
+            # loss.backward()
+            # if cfg.train.clip_norm:
+            #     clip_grad_norm_(model.parameters(), cfg.train.clip_norm)
+
             loss.backward()
             # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1000)
             self.optimizer.step()
@@ -79,8 +88,8 @@ class Trainer(BaseTrainer):
             log.update(**{'val_'+k : v for k, v in val_log.items()})
 
         if self.lr_scheduler is not None:
-            # self.lr_scheduler.step(loss)
-            self.lr_scheduler.step() #Note: If it doesn't require argument.
+            self.lr_scheduler.step(loss)
+            # self.lr_scheduler.step() #Note: If it doesn't require argument.
             self.writer.add_scalar('LR', self.optimizer.param_groups[0]['lr'])
         return log
 
@@ -129,26 +138,20 @@ class Trainer(BaseTrainer):
     def _show(self, data, output, train=True):
         g_plot = plot_representation(output[2][:,:output[0].shape[1]].cpu())
         g_plot_pred = plot_representation(output[2][:,output[0].shape[1]:].cpu())
-        A_plot = plot_matrix(output[5])
-        if output[6] is not None:
-            B_plot = plot_matrix(output[6])
+        A_plot = plot_matrix(output[4])
+        if output[5] is not None:
+            B_plot = plot_matrix(output[5])
             self.writer.add_image('B', make_grid(B_plot, nrow=1, normalize=False))
-        if output[7] is not None:
-            u_plot = plot_representation(output[7][:, :output[7].shape[1]].cpu())
-            self.writer.add_image('gu_repr', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
-
-        # if output[8] is not None:
-        #     g_rev_plot = plot_representation(output[8][:, :output[0].shape[1]].cpu())
-        #     g_rev_plot_pred = plot_representation(output[8][:,output[0].shape[1]:].cpu())
-        #     self.writer.add_image('g_rev_repr', make_grid(to_tensor(g_rev_plot), nrow=1, normalize=False))
-        #     self.writer.add_image('g_rev_repr_pred', make_grid(to_tensor(g_rev_plot_pred), nrow=1, normalize=False))
+        if output[6] is not None:
+            u_plot = plot_representation(output[6][:, :output[6].shape[1]].cpu())
+            self.writer.add_image('u', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
 
         self.writer.add_image('A', make_grid(A_plot, nrow=1, normalize=False))
         self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
         self.writer.add_image('g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
         self.writer.add_image('input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
-        self.writer.add_image('output', make_grid(output[0][0].cpu(), nrow=output[0].shape[1], normalize=True))
-        self.writer.add_image('output_pred', make_grid(output[1][0].cpu(), nrow=output[1].shape[1], normalize=True))
+        self.writer.add_image('output_0rec', make_grid(output[0][0].cpu(), nrow=output[0].shape[1], normalize=True))
+        self.writer.add_image('output_1pred', make_grid(output[1][0].cpu(), nrow=output[1].shape[1], normalize=True))
 
 
 

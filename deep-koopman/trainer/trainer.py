@@ -145,6 +145,9 @@ class Trainer(BaseTrainer):
         if output[6] is not None:
             u_plot = plot_representation(output[6][:, :output[6].shape[1]].cpu())
             self.writer.add_image('u', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
+        if output[10] is not None:
+            u_plot = plot_representation(output[6][:, :output[6].shape[1]].cpu())
+            self.writer.add_image('mf', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
 
         self.writer.add_image('A', make_grid(A_plot, nrow=1, normalize=False))
         self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))

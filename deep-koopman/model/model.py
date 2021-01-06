@@ -10,7 +10,10 @@ from base import BaseModel
 from model.networks import KoopmanOperators
 # from model.networks_slot_attention import ImageEncoder, ImageDecoder
 # from model.networks_self_attention import ImageEncoder, ImageDecoder
-from model.networks_dyn_attention import ImageEncoder, ImageDecoder
+# from model.networks_dyn_attention import ImageEncoder, ImageDecoder
+from model.networks_space import ImageEncoder, ImageDecoder
+
+from torch.distributions import Normal, kl_divergence
 
 # from model.networks_cswm.modules import TransitionGNN, EncoderCNNLarge, EncoderCNNMedium, EncoderCNNSmall, EncoderMLP, DecoderCNNLarge, DecoderCNNMedium, DecoderCNNSmall, DecoderMLP
 from torch.autograd import Variable
@@ -80,10 +83,11 @@ class RecKoopmanModel(BaseModel):
 
         self.content = None
 
-        feat_dyn_dim = feat_dim // 6
+        feat_dyn_dim = feat_dim // 8
         self.feat_dyn_dim = feat_dyn_dim
         self.feat_cte_dim = feat_dim - feat_dyn_dim
 
+        self.with_u = False
         self.n_iters = 1
         self.ini_alpha = 1
         # Note:
@@ -98,13 +102,14 @@ class RecKoopmanModel(BaseModel):
         # self.rnn_f_cte = nn.LSTM(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim, 1, bias=False, batch_first=True)
         # self.rnn_f_cte = nn.GRU(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim, 1, bias=False, batch_first=True)
 
-        self.linear_f_cte_mu = nn.Linear(self.feat_cte_dim, self.feat_cte_dim)
-        self.linear_f_cte_logvar = nn.Linear(self.feat_cte_dim, self.feat_cte_dim)
-        self.linear_f_dyn_mu = nn.Linear(feat_dyn_dim, feat_dyn_dim)
-        self.linear_f_dyn_logvar = nn.Linear(feat_dyn_dim, feat_dyn_dim)
+        # self.linear_f_cte_mu = nn.Linear(self.feat_cte_dim, self.feat_cte_dim)
+        # self.linear_f_cte_logvar = nn.Linear(self.feat_cte_dim, self.feat_cte_dim)
 
-        self.image_encoder = ImageEncoder(in_channels, self.feat_cte_dim, self.feat_dyn_dim, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
-        self.image_decoder = ImageDecoder(feat_dim, out_channels, ngf, n_layers)
+        self.linear_f_cte_post = nn.Linear(2 * self.feat_cte_dim, 2 * self.feat_cte_dim)
+        self.linear_f_dyn_post = nn.Linear(2 * self.feat_dyn_dim, 2 * self.feat_dyn_dim)
+
+        self.image_encoder = ImageEncoder(in_channels, 2 * self.feat_cte_dim, 2 * self.feat_dyn_dim, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
+        self.image_decoder = ImageDecoder(feat_dim, out_channels, dyn_dim = self.feat_dyn_dim, query_ch = 32)
         self.koopman = KoopmanOperators(feat_dyn_dim, nf_particle, nf_effect, g_dim, u_dim, n_timesteps, n_blocks)
 
     def _get_full_state(self, x, T):
@@ -146,33 +151,36 @@ class RecKoopmanModel(BaseModel):
         bs, T, ch, h, w = input.shape
         # Percentage of output
         free_pred = T//4
+        returned_post = []
 
         # Backbone deterministic features
         f_bb = self.image_encoder(input, block='backbone')
 
         # Dynamic features
         T_inp = T
-        f_dyn = self.image_encoder(f_bb[:, :T_inp], block='dyn')
+        f_dyn = self.image_encoder(f_bb[:, :T_inp], block='dyn_cnn')
         f_dyn = f_dyn.reshape(-1, f_dyn.shape[-1])
 
         # Sample dynamic features
-        f_mu_dyn, f_logvar_dyn = self.linear_f_dyn_mu(f_dyn), \
-                                 self.linear_f_dyn_logvar(f_dyn)
-        f_dyn = _sample_latent_simple(f_mu_dyn, f_logvar_dyn)
-        f_dyn = f_dyn.reshape(bs * self.n_objects, T_inp, *f_dyn.shape[1:])
+        f_mu_dyn, f_logvar_dyn = self.linear_f_dyn_post(f_dyn).reshape(bs, self.n_objects, T_inp, -1).chunk(2, -1)
+        f_dyn_post = Normal(f_mu_dyn, F.softplus(f_logvar_dyn))
+        f_dyn = f_dyn_post.rsample()
+        f_dyn = f_dyn.reshape(bs * self.n_objects, T_inp, -1)
+        returned_post.append(f_dyn_post)
 
         # Get delayed dynamic features
-        f_dyn_s, T_inp = self._get_full_state_hankel(f_dyn, T_inp)
+        f_dyn_state, T_inp = self._get_full_state_hankel(f_dyn, T_inp)
 
         # Get inputs from delayed dynamic features
         # Note:
         #  - U might depend also in features from the scene. Residual features (slot n+1 / Background)
         #  - Temperature increase might not be necessary
         #  - Gumbel softmax might help
-        u, u_dist = self.koopman.to_u(f_dyn_s, temp=self.ini_alpha + epoch * self.incr_alpha)
-
+        u, u_dist = self.koopman.to_u(f_dyn_state, temp=self.ini_alpha + epoch * self.incr_alpha)
+        if not self.with_u:
+            u = torch.zeros_like(u)
         # Get observations from delayed dynamic features
-        g = self.koopman.to_g(f_dyn_s.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
+        g = self.koopman.to_g(f_dyn_state.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
         g = g.reshape(bs * self.n_objects, T_inp, *g.shape[1:])
 
         # Get shifted observations for sys ID
@@ -194,6 +202,7 @@ class RecKoopmanModel(BaseModel):
         G_for_pred = self.koopman.simulate(T=T_inp-start_step-1, g=g[:,start_step], u=u[:,start_step:], A=A, B=B)
         g_for_koop= G_for_pred
 
+        assert f_bb[:, self.n_timesteps-1:self.n_timesteps-1 + T_inp].shape[1] == f_bb[:, self.n_timesteps-1:].shape[1]
         rec = {"obs": g,
                "backbone_features": f_bb[:, self.n_timesteps-1:self.n_timesteps-1 + T_inp],
                "T": T_inp,
@@ -203,8 +212,9 @@ class RecKoopmanModel(BaseModel):
                 "T": G_for_pred.shape[1],
                 "name": "pred"}
         outs = {}
-        cte_distr = {}
-        # TODO: I'm here. Check if the indices for f_bb and supervision are correct.
+        MFs = {}
+
+        # TODO: Check if the indices for f_bb and supervision are correct.
         # Recover partial shape with decoded dynamical features. Iterate with new estimates of the appearance.
         # Note: This process could be iterative.
         for idx, case in enumerate([rec, pred]):
@@ -213,104 +223,102 @@ class RecKoopmanModel(BaseModel):
 
             # get back dynamic features
             # if case_name == "rec":
-            #     f_dyn_tmp = f_dyn[:, -T_inp:].reshape(-1, *f_dyn.shape[2:])
+            #     f_dyn_state = f_dyn[:, -T_inp:].reshape(-1, *f_dyn.shape[2:])
             # else:
-            f_dyn_tmp = self.koopman.to_s(gcodes=_get_flat(case["obs"]),
+            # TODO: Try with Initial f_dyn_state (no koop)
+            f_dyn_state = self.koopman.to_s(gcodes=_get_flat(case["obs"]),
                                           psteps=self.psteps)
 
             # Initial noisy (low variance) constant vector.
             # Note:
             #  - Different realization for each time-step.
             #  - Is it a Variable?
-            f_cte_ini = torch.randn(bs * self.n_objects * case["T"], self.feat_cte_dim).to(f_dyn_tmp.device) * self.f_cte_ini_std
+            f_cte_ini = torch.randn(bs * self.n_objects * case["T"], self.feat_cte_dim).to(f_dyn_state.device) #* self.f_cte_ini_std
 
             # Get full feature vector
-            f = torch.cat([ f_dyn_tmp,
+            f = torch.cat([ f_dyn_state,
                             f_cte_ini], dim=-1)
 
             # Get coarse features from which obtain queries and/or decode
-            f_coarse = self.image_decoder(f, block = 'coarse')
-            f_coarse = f_coarse.reshape(bs, self.n_objects, case["T"], *f_coarse.shape[1:])
+            # f_coarse = self.image_decoder(f, block = 'coarse')
+            # f_coarse = f_coarse.reshape(bs, self.n_objects, case["T"], *f_coarse.shape[1:])
 
             for _ in range(self.n_iters):
 
                 # Get constant feature vector through attention
-                f_cte = self.image_encoder(case["backbone_features"], f_coarse, block='cte')
+                # f_cte = self.image_encoder(case["backbone_features"], f_coarse, block='cte')
 
-                # Sample cte features
-                f_cte = f_cte.mean(2)[:, :, None].repeat(1, 1, case["T"], 1)\
-                    .reshape(bs * self.n_objects * case["T"], self.feat_cte_dim) # Temporal average #Note: check dimensions
+                # Encode with raw dynamic features
+                f_cte, mf = self.image_encoder(case["backbone_features"], f_dyn_state, block='cte')
+
+
+                # cte features sum
+                # f_cte = f_cte.mean(2)[:, :, None].repeat(1, 1, case["T"], 1).reshape(bs * self.n_objects * case["T"], -1)
+                # f_cte = f_cte.mean(2).reshape(bs * self.n_objects, -1)
+
+                # Temporal average #Note: check dimensions
                 # f_cte = f_cte.repeat(1, 1, case["T"], 1) \
                 #     .reshape(bs * self.n_objects * case["T"], self.feat_cte_dim)
-                f_mu_cte, f_logvar_cte = self.linear_f_cte_mu(f_cte), \
-                                         self.linear_f_cte_logvar(f_cte)
-                f_cte = _sample_latent_simple(f_mu_cte, f_logvar_cte)
+
+                # Nothing average, query.
+
+                # Sample cte features
+                # f_mu_cte, f_logvar_cte = self.linear_f_cte_post(f_cte).reshape(bs, self.n_objects, case["T"], -1).chunk(2, -1)
+                # randperm_T = torch.randperm(case["T"])
+                # f_mu_cte, f_logvar_cte = self.linear_f_cte_post(f_cte[:, :, randperm_T]).reshape(bs, self.n_objects, case["T"], -1).chunk(2, -1)
+                f_mu_cte, f_logvar_cte = self.linear_f_cte_post(f_cte).reshape(bs, self.n_objects, 1, -1).chunk(2, -1)
+                f_cte_post = Normal(f_mu_cte, F.softplus(f_logvar_cte))
+                f_cte = f_cte_post.rsample()
+                f_cte = f_cte.repeat_interleave(case["T"], dim=2)
+                f_cte = f_cte.reshape(bs * self.n_objects * case["T"], self.feat_cte_dim)
 
                 # Register statistics
-                if case_name not in cte_distr:
-                    cte_distr[case_name] = (f_mu_cte, f_logvar_cte)
-                else:
-                    cte_distr[case_name] = (torch.cat([cte_distr[case_name][0], f_mu_cte],     dim=-1),
-                                            torch.cat([cte_distr[case_name][1], f_logvar_cte], dim=-1))
+                returned_post.append(f_cte_post)
 
                 # Get full feature vector
-                f = torch.cat([ f_dyn_tmp,
+                f = torch.cat([ f_dyn_state,
                                 f_cte], dim=-1)
 
                 # Get coarse features from which obtain queries and/or decode
-                f_coarse = self.image_decoder(f, block = 'coarse')
-                f_coarse = f_coarse.reshape(bs, self.n_objects, case["T"], *f_coarse.shape[1:])
+                # f_coarse = self.image_decoder(f, block = 'coarse')
+                # f_coarse = f_coarse.reshape(bs, self.n_objects, case["T"], *f_coarse.shape[1:])
 
-            # Get output
-            outs[case_name] = self.image_decoder(f_coarse, block = 'to_x')
+            # Get output. Spatial broadcast decoder
+            outs[case_name] = self.image_decoder(f, block = 'to_x')
+            MFs[case_name] = mf
 
-
-        # Convolutional decoder. Normally Spatial Broadcasting decoder
         out_rec = outs["rec"]
         out_pred = outs["pred"]
-        # TODO: concatenate cte_mu and cte_logvar to dyn statistics.
-        #  - Check that this is done in last dimension!!
-        # returned_mus = ...
+        mf_rec = MFs["rec"]
+        # mf_pred = MFs["pred"]
 
         # Test disentanglement - TO REVIEW
         # if random.random() < 0.1 or self.content is None:
         #     self.content = f_cte
         # f_cte = self.content
 
-        ''' -------------------- '''
-        returned_g = torch.cat([g, G_for_pred], dim=1)
-        returned_mus = [cte_distr["rec"][0], f_mu_dyn, cte_distr["pred"][0]]
-        returned_logvars = [cte_distr["rec"][1], f_logvar_dyn, cte_distr["pred"][1]]
-        # returned_mus = torch.cat([f_mu, f_mu_pred], dim=1)
-        # returned_logvars = torch.cat([f_logvar, f_logvar_pred], dim=1)
+        ''' Returned variables '''
+        returned_g = torch.cat([g, G_for_pred], dim=1) # Observations
 
-        o_touple = (out_rec, out_pred, returned_g.reshape(-1, returned_g.size(-1)),
-                    returned_mus,
-                    returned_logvars)
-                    # f_mu.reshape(-1, f_mu.size(-1)),
-                    # f_logvar.reshape(-1, f_logvar.size(-1)))
-        o = [item if isinstance(item, list) else item.reshape(torch.Size([bs * self.n_objects, -1]) + item.size()[1:]) for item in o_touple]
+        o_touple = (out_rec, out_pred, returned_g.reshape(-1, returned_g.size(-1)))
+        o = [item.reshape(torch.Size([bs * self.n_objects, -1]) + item.size()[1:]) for item in o_touple]
+
         # Option 1: one object mapped to 0
         # shape_o0 = o[0].shape
         # o[0] = o[0].reshape(bs, self.n_objects, *o[0].shape[1:])
         # o[0][:,0] = o[0][:,0]*0
         # o[0] = o[0].reshape(*shape_o0)
 
-        # o[:2] = [torch.clamp(torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:]), dim=1), min=0, max=1) for item in o[:2]]
+        # Sum across objects. Note: Add Clamp or Sigmoid.
+        o[:2] = [torch.clamp(torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:]), dim=1), min=0, max=1) for item in o[:2]]
 
-        # Test object decomposition
-        # o[:2] = [torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:])[:,0:1], dim=1) for item in o[:2]]
-        o[:2] = [torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:]), dim=1) for item in o[:2]]
-
-        # Note: In case we want to sum KL between objects
-        # o[3:5] = [item.reshape(bs, self.n_objects, *item.shape[1:]) for item in o[3:5]]
-
-        o.append(A)
-        o.append(B)
-
-        o.append(u.reshape(bs * self.n_objects, -1, u.shape[-1]))
-        o.append(u_dist.reshape(bs * self.n_objects, -1, *u_dist.shape[-1:])) #Append udist for categorical
-        o.append(g_for_koop.reshape(bs * self.n_objects, -1, g_for_koop.shape[-1]))
-        o.append(fit_err)
+        o.append(returned_post)
+        o.append(A) # State transition matrix
+        o.append(B) # Input matrix
+        o.append(u.reshape(bs * self.n_objects, -1, u.shape[-1])) # Inputs
+        o.append(u_dist.reshape(bs * self.n_objects, -1, u_dist.shape[-1])) # Input distribution
+        o.append(g_for_koop.reshape(bs * self.n_objects, -1, g_for_koop.shape[-1])) # Observation propagated only with A
+        o.append(fit_err) # Fit error g to G_for_pred
+        o.append(mf_rec) # Motion field reconstruction
 
         return o

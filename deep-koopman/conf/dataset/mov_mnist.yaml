@@ -4,20 +4,22 @@ n_gpu: 1
 # Global variables
 n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
 image_size: &IS [64, 64] # Input image size
-seq_length: &SeqL 15 # Length of the observed sequence.
+seq_length: &SeqL 10 # Length of the observed sequence.
 n_objects: &Nobj 2
 
 log_step: 50
 
 loss: "embedding_loss"
 #loss: "explicit_embedding_loss"
-# TODO: reduce feat dim and g_dim, and reduce u_dim
+
+
+# TODO: probar betas=(0.5, 0.999))
 arch:
   type: "RecKoopmanModel"
   args:
     in_channels: 1
-    feat_dim: &Fdim 30
-    g_dim: &Gdim 10
+    feat_dim: &Fdim 60
+    g_dim: &Gdim 15
     u_dim: 2
     n_objects: *Nobj
     I_factor: 0.01
@@ -48,7 +50,7 @@ data_loader:
 optimizer:
   type: "Adam"
   args:
-    lr: 0.001
+    lr: 0.0003
     betas: [0.9, 0.999]
     weight_decay: 0.0001
     amsgrad: true
@@ -64,19 +66,20 @@ optimizer:
 
 metrics: [] #["accuracy", "top_k_acc"]
 
-lr_scheduler:
-  type: "StepLR"
-  args:
-    step_size: 10
-    gamma: 0.3
-
+# TODO: Reduce on plateau!
 #lr_scheduler:
-#  type: "ReduceLROnPlateau"
+#  type: "StepLR"
 #  args:
-#    mode: 'min'
-#    factor: 0.6
-#    patience: 5
-#    verbose: True
+#    step_size: 20
+#    gamma: 0.3
+
+lr_scheduler:
+  type: "ReduceLROnPlateau"
+  args:
+    mode: 'min'
+    factor: 0.4
+    patience: 5
+    verbose: True
 # scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.6, patience=2, verbose=True)
 
 trainer:

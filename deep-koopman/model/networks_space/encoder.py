@@ -4,7 +4,8 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from .dynamics_attention import DynamicsAttention
 from .coord_networks import CoordEncoder
-from .s3d import Simple_S3DG
+# from model.networks.kornia import warp_affine
+from model.networks_space.s3d import Simple_S3D
 import numpy as np
 
 class View(nn.Module):
@@ -24,7 +25,7 @@ class ImageEncoder(nn.Module):
         self.n_objects = n_objects
         self.feat_cte_dim = feat_cte_dim
         self.feat_dyn_dim = feat_dyn_dim
-        self.resolution = (8, 8)
+        self.resolution = (32, 32)
 
         # TODO: Group norm has to be implemented with 3d convolutions, with kernel size 1 in time. Or batchnorm.
 
@@ -52,9 +53,9 @@ class ImageEncoder(nn.Module):
             nn.Conv2d(64, 128, 4, 2, 1),
             nn.CELU(),
             nn.BatchNorm2d(128),
-            nn.Conv2d(128, 128, 4, 2, 1),
-            nn.CELU(),
-            nn.BatchNorm2d(128),
+            # nn.Conv2d(128, 128, 4, 2, 1),
+            # nn.CELU(),
+            # nn.BatchNorm2d(128),
             nn.Conv2d(128, self.feat_cte_dim, 1),
             nn.CELU(),
             nn.BatchNorm2d(self.feat_cte_dim),
@@ -65,7 +66,7 @@ class ImageEncoder(nn.Module):
         # DYN
         # TODO: Simplify output a great deal. Maxpool and similar is permitted (AND DESIRED) as we dont need or want to keep all info.
         #  - I3D reduced version S3D
-        self.cnn_dyn = Simple_S3DG(chan_out=self.feat_dyn_dim, n_obj=self.n_objects, dropout_keep_prob = 0.8, input_channel = 1, spatial_squeeze=True)
+        self.cnn_dyn = Simple_S3D(chan_out=self.feat_dyn_dim, n_obj=self.n_objects, dropout_keep_prob = 0.8, input_channel = 1, spatial_squeeze=True)
 
         # self.cnn_dyn = nn.Sequential(
         #     nn.Conv2d(in_channels, 16, 4, 2, 1),
@@ -104,7 +105,7 @@ class ImageEncoder(nn.Module):
         #                          nn.Linear(ch, ch))
 
         # self.warping = CoordEncoder(self.feat_cte_dim, self.feat_dyn_dim//2, feat_map_size=self.resolution)
-        self.warping = CoordEncoder(1, self.feat_dyn_dim//2, feat_map_size=(64, 64))
+        # self.warping = CoordEncoder(1, self.feat_dyn_dim//2, feat_map_size=(64, 64))
 
         self.temp_aggr = TempNet(2, feat_cte_dim, feat_cte_dim * 2, feat_cte_dim, do_prob=0.2)
 
@@ -127,6 +128,10 @@ class ImageEncoder(nn.Module):
     def forward(self, x, dyn_feat_input=None, block='backbone'):
         bs, T, ch, h, w = x.shape
 
+        # TODO: Homography from a bounding box. 4 points for complete, 3 if no deformation, or 2 if no rotation.
+        #  Gumbel-softmax 2D.
+        # TODO: Start testing homography with image 1 of the pipeline and imposing the two points (center + corner?)
+        # TODO: Començar reconstruint només el digit a resolució 32x32 i amb el CTE vector (broadcasted, que potser despres afegim f_dyn).
         if block == 'backbone':
             pass
             # x = x.reshape(-1, *x.shape[2:])
@@ -170,14 +175,13 @@ class ImageEncoder(nn.Module):
             # x = self.cnn_cte(x)
 
             # Option 2
-            x, MF = self.warping(x, dyn_feat_input)
-            x = self.cnn_cte_bb(x) # TODO: add dyn_feat_input to the input channels (mid depth)
+            x = self.cnn_cte_bb(x.reshape(-1, *x.shape[-3:])) # TODO: add dyn_feat_input to the input channels (mid depth)
             x = self.cnn_cte(x)
 
             # # Different ways to combine temporal features.
 
             # TORRALBA CAUSALITY PAPER. Time combining CNN
-            x = self.temp_aggr(x, T)
+            x = self.temp_aggr(x, T) # Make sure objects come before time. Because it reshapes according to this.
             # x = x.reshape(bs, self.n_objects, 1, self.feat_cte_dim)
 
             # Mixing variable.
@@ -203,7 +207,6 @@ class ImageEncoder(nn.Module):
             # x, hidden = self.encode_cte_rnn(x.reshape(bs * self.n_objects, T, self.feat_cte_dim))
             # x = x[:, -1:].reshape(bs, self.n_objects, 1, self.feat_cte_dim)
 
-            return x, MF
         return x
 
 def spatial_flatten_for_sa(x):

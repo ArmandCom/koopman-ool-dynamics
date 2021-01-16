@@ -21,7 +21,7 @@ class STConv3d(nn.Module):
     def __init__(self,in_planes,out_planes,kernel_size,stride,padding=0):
         super(STConv3d, self).__init__()
         self.conv = nn.Conv3d(in_planes, out_planes, kernel_size=(1,kernel_size,kernel_size),stride=(1,stride,stride),padding=(0,padding,padding))
-        self.conv2 = nn.Conv3d(out_planes,out_planes,kernel_size=(kernel_size,1,1),stride=(stride,1,1),padding=(padding,0,0))
+        self.conv2 = nn.Conv3d(out_planes,out_planes,kernel_size=(kernel_size,1,1),stride=(1,1,1),padding=(padding,0,0))
 
         self.bn=nn.BatchNorm3d(out_planes, eps=1e-3, momentum=0.001, affine=True)
         self.relu = nn.ReLU(inplace=True)
@@ -220,6 +220,25 @@ class Mixed_4e(nn.Module):
         out = torch.cat((x0, x1, x2, x3), 1)
         return out
 
+class Mixed_4_last(nn.Module):
+    def __init__(self):
+        super(Mixed_4_last, self).__init__()
+
+        self.branch0 = nn.Sequential(
+            BasicConv3d(512, 256, kernel_size=1, stride=1),
+        )
+        self.branch1 = nn.Sequential(
+            BasicConv3d(512, 160, kernel_size=1, stride=1),
+            STConv3d(160, 320, kernel_size=3, stride=1, padding=1),
+        )
+        self.branch2 = nn.Sequential(
+            BasicConv3d(512, 32, kernel_size=1, stride=1),
+            STConv3d(32, 128, kernel_size=3, stride=1, padding=1),
+        )
+        self.branch3 = nn.Sequential(
+            nn.MaxPool3d(kernel_size=(3, 3, 3), stride=1, padding=1),
+            BasicConv3d(512, 128, kernel_size=1, stride=1),
+        )
 
 class Mixed_4f(nn.Module):
     def __init__(self):
@@ -364,10 +383,10 @@ class STMessagePassing(nn.Module):
         out = self.messages(x)
         return out
 
-class Simple_S3DG(nn.Module):
+class Simple_S3D(nn.Module):
 
     def __init__(self, chan_out=1, n_obj=1, dropout_keep_prob = 1, input_channel = 1, spatial_squeeze=True):
-        super(Simple_S3DG, self).__init__()
+        super(Simple_S3D, self).__init__()
         self.features = nn.Sequential(
             STConv3d(input_channel, 64, kernel_size=7, stride=2, padding=3), # (64, 32, 32, 32)
             nn.MaxPool3d(kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1)),  # (64, 32, 16, 16) (Makes sense?)
@@ -378,15 +397,18 @@ class Simple_S3DG(nn.Module):
             Mixed_3c(), # (480, 32, 28, 28)
             # nn.MaxPool3d(kernel_size=(3, 3, 3), stride=(2, 2, 2), padding=(1, 1, 1)), # (480, 16, 14, 14)
             Mixed_4b(),# (512, 16, 14, 14)
+            # PrintShape(),
             # Mixed_4c(),# (512, 16, 14, 14)
             # Mixed_4d(),# (512, 16, 14, 14)
             # Mixed_4e(),# (528, 16, 14, 14)
-            # Mixed_4f(),# (832, 16, 14, 14)
+            # Mixed_4f(),# (528, 16, 14, 14)
             nn.MaxPool3d(kernel_size=(1, 3, 3), stride=(1, 2, 2), padding=(0, 1, 1)), # (832, 32, 4, 4)
             # nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 0, 0)), # (832, 8, 7, 7)
-            Mixed_5b(), # (832, 8, 7, 7)
+            # Mixed_5b(), # (832, 8, 7, 7)
+            # PrintShape(),
             # Mixed_5c(), # (1024, 8, 7, 7)
-            BasicConv3d(832, 512, kernel_size=(1, 4, 4), stride=1, padding=0), # (832, 512, 32, 1, 1)
+            BasicConv3d(512, 512, kernel_size=(1, 4, 4), stride=1, padding=0), # (832, 512, 32, 1, 1)
+            # BasicConv3d(832, 512, kernel_size=(1, 4, 4), stride=1, padding=0), # (832, 512, 32, 1, 1)
             # nn.AvgPool3d(kernel_size=(2, 7, 7), stride=1),# (1024, 8, 1, 1)
             nn.Dropout3d(dropout_keep_prob),
             nn.Conv3d(512, chan_out * n_obj, kernel_size=1, stride=1, bias=True),# (400, chan*obj, 32, 1, 1)
@@ -396,11 +418,16 @@ class Simple_S3DG(nn.Module):
 
     def forward(self, x):
         logits = self.features(x)
-
         if self.spatial_squeeze:
             logits = logits.squeeze(3)
             logits = logits.squeeze(3)
 
-
         return logits
 
+
+class PrintShape(nn.Module):
+    def __init__(self):
+        super(PrintShape, self).__init__()
+    def forward(self,x):
+        print(x.shape)
+        return x

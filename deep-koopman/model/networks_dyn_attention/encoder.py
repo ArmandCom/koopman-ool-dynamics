@@ -51,7 +51,7 @@ class ImageEncoder(nn.Module):
         )
 
         # dyn_output_dim = self.n_objects * feat_dyn_dim
-        self.encode_dyn_rnn = nn.LSTM(ch + feat_dyn_dim, feat_dyn_dim, num_layers=1, batch_first=True)
+        self.encode_dyn_rnn = nn.LSTM(ch + feat_dyn_dim, feat_dyn_dim, num_layers=2, batch_first=True)
         # self.encode_cte_rnn = nn.LSTM(feat_cte_dim, feat_cte_dim, num_layers=1, batch_first=True)
 
 
@@ -130,7 +130,8 @@ class ImageEncoder(nn.Module):
 
         if block == 'cte':
             assert dyn_feat_input is not None
-            x, attn = self.attn(x, dyn_feat_input)
+            x = x.reshape(bs * T, *x.shape[2:])
+            # x, attn = self.attn(x, dyn_feat_input)
             x = self.cnn_cte(x)
 
             # If mean

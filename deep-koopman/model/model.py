@@ -4,6 +4,7 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import numpy as np
 from base import BaseModel
+from model.networks.kornia import get_affine_params, warp_affine, test_final_functions_affine #, test_kornia, test_kornia_affine, test_final_functions_affine
 # from model.networks import ImageEncoder, SBImageDecoder, SimpleSBImageDecoder, \
 #     KoopmanOperators, AttImageEncoder, ImageDecoder, \
 #     deconvSpatialDecoder, linearSpatialDecoder, LinearEncoder, ObjectAttention
@@ -12,7 +13,7 @@ from model.networks import KoopmanOperators
 # from model.networks_self_attention import ImageEncoder, ImageDecoder
 # from model.networks_dyn_attention import ImageEncoder, ImageDecoder
 from model.networks_space import ImageEncoder, ImageDecoder
-
+from model.networks_space.coord_networks import KeyPointsExtractor
 from torch.distributions import Normal, kl_divergence
 
 # from model.networks_cswm.modules import TransitionGNN, EncoderCNNLarge, EncoderCNNMedium, EncoderCNNSmall, EncoderMLP, DecoderCNNLarge, DecoderCNNMedium, DecoderCNNSmall, DecoderMLP
@@ -99,6 +100,9 @@ class RecKoopmanModel(BaseModel):
         #  - This noise has lower variance than prior. Otherwise it would sample regular features.
         self.f_cte_ini_std = 0.0
 
+        self.cte_resolution = (32, 32)
+        self.ori_resolution = (64, 64)
+
         # self.rnn_f_cte = nn.LSTM(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim, 1, bias=False, batch_first=True)
         # self.rnn_f_cte = nn.GRU(feat_dim - feat_dyn_dim, feat_dim - feat_dyn_dim, 1, bias=False, batch_first=True)
 
@@ -109,8 +113,10 @@ class RecKoopmanModel(BaseModel):
         self.linear_f_dyn_post = nn.Linear(2 * self.feat_dyn_dim, 2 * self.feat_dyn_dim)
 
         self.image_encoder = ImageEncoder(in_channels, 2 * self.feat_cte_dim, 2 * self.feat_dyn_dim, n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
-        self.image_decoder = ImageDecoder(feat_dim, out_channels, dyn_dim = self.feat_dyn_dim, query_ch = 32)
+        self.image_decoder = ImageDecoder(self.feat_cte_dim, out_channels, dyn_dim = self.feat_dyn_dim, resolution=self.cte_resolution)
         self.koopman = KoopmanOperators(feat_dyn_dim, nf_particle, nf_effect, g_dim, u_dim, n_timesteps, n_blocks)
+
+        self.bb_points = KeyPointsExtractor(self.feat_dyn_dim, hidden_dim=self.feat_dyn_dim * 2, resolution=self.ori_resolution, n_points=2)
 
     def _get_full_state(self, x, T):
 
@@ -150,9 +156,12 @@ class RecKoopmanModel(BaseModel):
     def forward(self, input, epoch = 1):
         bs, T, ch, h, w = input.shape
         # Percentage of output
+
+        # test_final_functions_affine(input)
         free_pred = T//4
         returned_post = []
 
+        input = input.cuda()
         # Backbone deterministic features
         f_bb = self.image_encoder(input, block='backbone')
 
@@ -212,7 +221,7 @@ class RecKoopmanModel(BaseModel):
                 "T": G_for_pred.shape[1],
                 "name": "pred"}
         outs = {}
-        MFs = {}
+        BBs = {}
 
         # TODO: Check if the indices for f_bb and supervision are correct.
         # Recover partial shape with decoded dynamical features. Iterate with new estimates of the appearance.
@@ -225,7 +234,7 @@ class RecKoopmanModel(BaseModel):
             # if case_name == "rec":
             #     f_dyn_state = f_dyn[:, -T_inp:].reshape(-1, *f_dyn.shape[2:])
             # else:
-            # TODO: Try with Initial f_dyn_state (no koop)
+            # TODO: Try with Initial f_dyn (no koop)
             f_dyn_state = self.koopman.to_s(gcodes=_get_flat(case["obs"]),
                                           psteps=self.psteps)
 
@@ -233,11 +242,11 @@ class RecKoopmanModel(BaseModel):
             # Note:
             #  - Different realization for each time-step.
             #  - Is it a Variable?
-            f_cte_ini = torch.randn(bs * self.n_objects * case["T"], self.feat_cte_dim).to(f_dyn_state.device) #* self.f_cte_ini_std
+            # f_cte_ini = torch.randn(bs * self.n_objects * case["T"], self.feat_cte_dim).to(f_dyn_state.device) #* self.f_cte_ini_std
 
             # Get full feature vector
-            f = torch.cat([ f_dyn_state,
-                            f_cte_ini], dim=-1)
+            # f = torch.cat([ f_dyn_state,
+            #                 f_cte_ini], dim=-1)
 
             # Get coarse features from which obtain queries and/or decode
             # f_coarse = self.image_decoder(f, block = 'coarse')
@@ -249,7 +258,12 @@ class RecKoopmanModel(BaseModel):
                 # f_cte = self.image_encoder(case["backbone_features"], f_coarse, block='cte')
 
                 # Encode with raw dynamic features
-                f_cte, mf = self.image_encoder(case["backbone_features"], f_dyn_state, block='cte')
+                sm_x, argsm_x = self.bb_points(f_dyn_state)
+                M_center, M_relocate = get_affine_params(argsm_x)
+                bb_feat = case["backbone_features"].unsqueeze(1).repeat_interleave(self.n_objects, dim=1)\
+                    .reshape(-1, *case["backbone_features"].shape[-4:]) # Repeat for number of objects
+                warped_bb_feat = warp_affine(bb_feat, M_center, *self.cte_resolution) # Check all resolutions are coordinate [32, 32]
+                f_cte = self.image_encoder(warped_bb_feat, f_dyn_state, block='cte')
 
 
                 # cte features sum
@@ -276,21 +290,25 @@ class RecKoopmanModel(BaseModel):
                 returned_post.append(f_cte_post)
 
                 # Get full feature vector
-                f = torch.cat([ f_dyn_state,
-                                f_cte], dim=-1)
+                # f = torch.cat([ f_dyn_state,
+                #                 f_cte], dim=-1) # Note: Do if f_dyn_state is used in the appearance
+                f = f_cte
 
                 # Get coarse features from which obtain queries and/or decode
                 # f_coarse = self.image_decoder(f, block = 'coarse')
                 # f_coarse = f_coarse.reshape(bs, self.n_objects, case["T"], *f_coarse.shape[1:])
 
             # Get output. Spatial broadcast decoder
-            outs[case_name] = self.image_decoder(f, block = 'to_x')
-            MFs[case_name] = mf
+            dec_obj = self.image_decoder(f, block='to_x')
+            outs[case_name] = warp_affine(dec_obj, M_relocate, h=h, w=w)
+
+
+            BBs[case_name] = sm_x
 
         out_rec = outs["rec"]
         out_pred = outs["pred"]
-        mf_rec = MFs["rec"]
-        # mf_pred = MFs["pred"]
+        bb_rec = BBs["rec"]
+        # bb_rec = BBs["pred"]
 
         # Test disentanglement - TO REVIEW
         # if random.random() < 0.1 or self.content is None:
@@ -311,7 +329,7 @@ class RecKoopmanModel(BaseModel):
 
         # Sum across objects. Note: Add Clamp or Sigmoid.
         o[:2] = [torch.clamp(torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:]), dim=1), min=0, max=1) for item in o[:2]]
-
+        # print(o[0].shape)
         o.append(returned_post)
         o.append(A) # State transition matrix
         o.append(B) # Input matrix
@@ -319,6 +337,11 @@ class RecKoopmanModel(BaseModel):
         o.append(u_dist.reshape(bs * self.n_objects, -1, u_dist.shape[-1])) # Input distribution
         o.append(g_for_koop.reshape(bs * self.n_objects, -1, g_for_koop.shape[-1])) # Observation propagated only with A
         o.append(fit_err) # Fit error g to G_for_pred
-        o.append(mf_rec) # Motion field reconstruction
+
+        bb_rec = bb_rec.reshape(torch.Size([bs * self.n_objects, -1]) + bb_rec.size()[1:])
+        bb_rec =torch.sum(bb_rec.reshape(bs, self.n_objects, *bb_rec.shape[1:]), dim=1)
+        # print('asdf ',bb_rec.shape)
+        o.append(bb_rec) # Motion field reconstruction
+
 
         return o

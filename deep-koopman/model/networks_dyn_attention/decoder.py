@@ -22,6 +22,13 @@ class ImageDecoder(nn.Module):
       nn.ConvTranspose2d(ch, ch, 5, 1, 2), # 16
       nn.ReLU(True),
     )
+
+    self.query_cnn = nn.Sequential(
+      nn.ConvTranspose2d(input_size, ch, 5, 1, 2),
+      nn.ReLU(True),
+      nn.ConvTranspose2d(ch, ch, 5, 1, 2), # 16
+    )
+
     self.to_x_cnn = nn.Sequential(
       nn.ConvTranspose2d(ch, ch, 4, 2, 1), # 32
       nn.ReLU(True),
@@ -63,11 +70,16 @@ class ImageDecoder(nn.Module):
       x = spatial_broadcast(x, self.decoder_initial_size)
       x = self.decoder_pos(x)
       x = x.permute(0,2,1).reshape(bs, dim, *self.decoder_initial_size)
-      x = self.broad_dec_cnn(x)
+      x = self.query_cnn(x)
 
     if block == 'to_x':
-      bs, n_obj, T, ch, h, w = x.shape
-      x = self.to_x_cnn(x.reshape(-1, ch, h, w))
+      bs, dim = x.shape
+      x = spatial_broadcast(x, self.decoder_initial_size)
+      x = self.decoder_pos(x)
+      x = x.permute(0,2,1).reshape(bs, dim, *self.decoder_initial_size)
+      x = self.broad_dec_cnn(x)
+      # x = self.to_x_cnn(x.reshape(-1, ch, h, w))
+      x = self.to_x_cnn(x)
 
     return x
 

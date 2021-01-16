@@ -4,10 +4,125 @@ import torch.nn.functional as F
 import numpy as np
 from .coord_networks import CoordDecoder
 
-
 class ImageDecoder(nn.Module):
-  def __init__(self, input_size, out_ch, dyn_dim, query_ch):
+  def __init__(self, input_size, out_ch, dyn_dim, resolution=[64, 64]):
     super(ImageDecoder, self).__init__()
+
+    self.dyn_dim = dyn_dim
+    init_ch = 128
+    self.init_dec_cnn = nn.Sequential(
+      nn.Conv2d(input_size, init_ch, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(init_ch),
+    )
+
+    # TO X CNN
+    self.to_x_cnn = nn.Sequential(
+      nn.Conv2d(init_ch, 128 * 2 * 2, 1), # 2, 2
+      nn.PixelShuffle(2),
+      nn.CELU(),
+      nn.BatchNorm2d(128),
+      nn.Conv2d(128, 128, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(128),
+
+      nn.Conv2d(128, 128 * 2 * 2, 1), # 4, 4
+      nn.PixelShuffle(2),
+      nn.CELU(),
+      nn.BatchNorm2d(128),
+      nn.Conv2d(128, 128, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(128),
+
+      nn.Conv2d(128, 64 * 2 * 2, 1), # 8, 8
+      nn.PixelShuffle(2),
+      nn.CELU(),
+      nn.BatchNorm2d(64),
+      nn.Conv2d(64, 64, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(64),
+    )
+
+    self.to_x_final = nn.Sequential(
+      nn.Conv2d(64, 32 * 2 * 2, 1), # 16, 16
+      nn.PixelShuffle(2),
+      nn.CELU(),
+      nn.BatchNorm2d(32),
+      nn.Conv2d(32, 32, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(32),
+      nn.Conv2d(32, 16 * 2 * 2, 1), # 32, 32
+      nn.PixelShuffle(2),
+      nn.CELU(),
+      nn.BatchNorm2d(16),
+      nn.Conv2d(16, 16, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(16),
+      nn.Conv2d(16, out_ch, 3, 1, 1)
+    )
+
+    # TO X CNN SPACE
+    # self.dec = nn.Sequential(
+    #   nn.Conv2d(input_size, 256, 1),
+    #   nn.CELU(),
+    #   nn.GroupNorm(16, 256),
+    #
+    #   nn.Conv2d(256, 128 * 2 * 2, 1),
+    #   nn.PixelShuffle(2),
+    #   nn.CELU(),
+    #   nn.GroupNorm(16, 128),
+    #   nn.Conv2d(128, 128, 3, 1, 1),
+    #   nn.CELU(),
+    #   nn.GroupNorm(16, 128),
+    #
+    #   nn.Conv2d(128, 128 * 2 * 2, 1),
+    #   nn.PixelShuffle(2),
+    #   nn.CELU(),
+    #   nn.GroupNorm(16, 128),
+    #   nn.Conv2d(128, 128, 3, 1, 1),
+    #   nn.CELU(),
+    #   nn.GroupNorm(16, 128),
+    #
+    #   nn.Conv2d(128, 64 * 2 * 2, 1),
+    #   nn.PixelShuffle(2),
+    #   nn.CELU(),
+    #   nn.GroupNorm(8, 64),
+    #   nn.Conv2d(64, 64, 3, 1, 1),
+    #   nn.CELU(),
+    #   nn.GroupNorm(8, 64),
+    #
+    #   nn.Conv2d(64, 32 * 2 * 2, 1),
+    #   nn.PixelShuffle(2),
+    #   nn.CELU(),
+    #   nn.GroupNorm(8, 32),
+    #   nn.Conv2d(32, 32, 3, 1, 1),
+    #   nn.CELU(),
+    #   nn.GroupNorm(8, 32),
+    #
+    #   nn.Conv2d(32, 16 * 2 * 2, 1),
+    #   nn.PixelShuffle(2),
+    #   nn.CELU(),
+    #   nn.GroupNorm(4, 16),
+    #   nn.Conv2d(16, 16, 3, 1, 1),
+    #   nn.CELU(),
+    #   nn.GroupNorm(4, 16),
+    # )
+
+  def forward(self, input, block = 'all'):
+    bs, dim = input.shape
+    input = input.reshape(*input.size(), 1, 1)
+
+    x = self.init_dec_cnn(input)#.reshape(bs, -1)
+
+    if block == 'to_x':
+      x = self.to_x_cnn(x)
+      x = torch.sigmoid(self.to_x_final(x))
+
+    return x
+
+class ImageBroadcastDecoder(nn.Module):
+  def __init__(self, input_size, out_ch, dyn_dim, resolution=[64, 64]):
+    super(ImageBroadcastDecoder, self).__init__()
 
     self.dyn_dim = dyn_dim
     init_ch = 128

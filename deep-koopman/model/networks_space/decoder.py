@@ -121,16 +121,16 @@ class ImageDecoder(nn.Module):
     return x
 
 class ImageBroadcastDecoder(nn.Module):
-  def __init__(self, input_size, out_ch, dyn_dim, resolution=[64, 64]):
+  def __init__(self, input_size, out_ch, resolution=(8, 8)):
     super(ImageBroadcastDecoder, self).__init__()
 
-    self.dyn_dim = dyn_dim
-    init_ch = 128
-    self.init_dec_cnn = nn.Sequential(
-      nn.Conv2d(input_size, init_ch, 1),
-      nn.CELU(),
-      nn.BatchNorm2d(init_ch),
-    )
+    # self.dyn_dim = dyn_dim
+    # init_ch = 128
+    # self.init_dec_cnn = nn.Sequential(
+    #   nn.Conv2d(input_size, init_ch, 1),
+    #   nn.CELU(),
+    #   nn.BatchNorm2d(init_ch),
+    # )
 
     # Query cnn
     # self.query_cnn = nn.Sequential(
@@ -154,28 +154,32 @@ class ImageBroadcastDecoder(nn.Module):
     # )
 
     # TO X CNN
+    # TODO: HARD PE
     self.to_x_cnn = nn.Sequential(
-      nn.Conv2d(init_ch, 128, 1),
+      nn.Conv2d(input_size, 64, 1),
       nn.CELU(),
-      nn.BatchNorm2d(128),
+      nn.BatchNorm2d(64),
 
       # nn.Conv2d(init_ch, 128 * 2 * 2, 1), # 16, 16
       # nn.PixelShuffle(2),
       # nn.CELU(),
       # nn.BatchNorm2d(128),
-      nn.Conv2d(128, 128, 3, 1, 1),
-      nn.CELU(),
-      nn.BatchNorm2d(128),
+      # nn.Conv2d(128, 128, 3, 1, 1),
+      # nn.CELU(),
+      # nn.BatchNorm2d(128),
 
       # nn.Conv2d(128, 128 * 2 * 2, 1),
       # nn.PixelShuffle(2),
       # nn.CELU(),
       # nn.BatchNorm2d(128),
-      nn.Conv2d(128, 128, 3, 1, 1),
+      # nn.Conv2d(128, 128, 3, 1, 1),
+      # nn.CELU(),
+      # nn.BatchNorm2d(128),
+      nn.Conv2d(64, 64 * 2 * 2, 1),
+      nn.PixelShuffle(2),
       nn.CELU(),
-      nn.BatchNorm2d(128),
-
-      nn.Conv2d(128, 64 * 2 * 2, 1),
+      nn.BatchNorm2d(64),
+      nn.Conv2d(64, 64 * 2 * 2, 1),
       nn.PixelShuffle(2),
       nn.CELU(),
       nn.BatchNorm2d(64),
@@ -189,66 +193,26 @@ class ImageBroadcastDecoder(nn.Module):
       nn.PixelShuffle(2),
       nn.CELU(),
       nn.BatchNorm2d(32),
+      # nn.Conv2d(32, 32, 3, 1, 1),
+      # nn.CELU(),
+      # nn.BatchNorm2d(32),
+      nn.Conv2d(32, 32 * 2 * 2, 1),
+      nn.PixelShuffle(2),
+      nn.CELU(),
+      nn.BatchNorm2d(32),
       nn.Conv2d(32, 16, 3, 1, 1),
       nn.CELU(),
       nn.BatchNorm2d(16),
-      nn.Conv2d(16, 16, 3, 1, 1),
-      nn.CELU(),
-      nn.BatchNorm2d(16),
+      # nn.Conv2d(16, 16, 3, 1, 1),
+      # nn.CELU(),
+      # nn.BatchNorm2d(16),
       nn.Conv2d(16, out_ch, 3, 1, 1)
     )
 
-    # TO X CNN SPACE
-    # self.dec = nn.Sequential(
-    #   nn.Conv2d(input_size, 256, 1),
-    #   nn.CELU(),
-    #   nn.GroupNorm(16, 256),
-    #
-    #   nn.Conv2d(256, 128 * 2 * 2, 1),
-    #   nn.PixelShuffle(2),
-    #   nn.CELU(),
-    #   nn.GroupNorm(16, 128),
-    #   nn.Conv2d(128, 128, 3, 1, 1),
-    #   nn.CELU(),
-    #   nn.GroupNorm(16, 128),
-    #
-    #   nn.Conv2d(128, 128 * 2 * 2, 1),
-    #   nn.PixelShuffle(2),
-    #   nn.CELU(),
-    #   nn.GroupNorm(16, 128),
-    #   nn.Conv2d(128, 128, 3, 1, 1),
-    #   nn.CELU(),
-    #   nn.GroupNorm(16, 128),
-    #
-    #   nn.Conv2d(128, 64 * 2 * 2, 1),
-    #   nn.PixelShuffle(2),
-    #   nn.CELU(),
-    #   nn.GroupNorm(8, 64),
-    #   nn.Conv2d(64, 64, 3, 1, 1),
-    #   nn.CELU(),
-    #   nn.GroupNorm(8, 64),
-    #
-    #   nn.Conv2d(64, 32 * 2 * 2, 1),
-    #   nn.PixelShuffle(2),
-    #   nn.CELU(),
-    #   nn.GroupNorm(8, 32),
-    #   nn.Conv2d(32, 32, 3, 1, 1),
-    #   nn.CELU(),
-    #   nn.GroupNorm(8, 32),
-    #
-    #   nn.Conv2d(32, 16 * 2 * 2, 1),
-    #   nn.PixelShuffle(2),
-    #   nn.CELU(),
-    #   nn.GroupNorm(4, 16),
-    #   nn.Conv2d(16, 16, 3, 1, 1),
-    #   nn.CELU(),
-    #   nn.GroupNorm(4, 16),
-    # )
-
-    self.decoder_initial_size = (16, 16)
+    self.decoder_initial_size = resolution
     # self.warping = CoordDecoder(32, dyn_dim, feat_map_size=self.decoder_initial_size)
 
-    self.linear_pos = nn.Linear(4, init_ch)
+    self.linear_pos = nn.Linear(4, input_size)
     self.register_buffer('grid_dec', self._build_grid(self.decoder_initial_size))
     self.decoder_pos = self._soft_position_embed
 
@@ -267,23 +231,15 @@ class ImageBroadcastDecoder(nn.Module):
 
   def forward(self, input, block = 'all'):
     bs, dim = input.shape
-    input = input.view(*input.size(), 1, 1)
-    x = self.init_dec_cnn(input).reshape(bs, -1)
-
-    if block == 'coarse':
-      x = spatial_broadcast(x, self.decoder_initial_size)
-      x = self.decoder_pos(x)
-      x = x.permute(0,2,1).reshape(bs, -1, *self.decoder_initial_size)
-      x = self.query_cnn(x)
 
     if block == 'to_x':
       # TODO: Substitute by hard PE
-      x = spatial_broadcast(x, self.decoder_initial_size)
+      x = spatial_broadcast(input, self.decoder_initial_size)
       x = self.decoder_pos(x)
       x = x.permute(0,2,1).reshape(bs, -1, *self.decoder_initial_size)
-      x = self.to_x_cnn(x) # TODO: Deconvolve to 32 x 32 and center in a layout of 64 by 64
-      # x, MF = self.warping(x, input[:, :self.dyn_dim])
+      x = self.to_x_cnn(x)
       x = torch.sigmoid(self.to_x_final(x))
+
     return x
 
     # Undo combination of slot and batch dimension; split alpha masks.

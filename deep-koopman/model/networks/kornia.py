@@ -1,7 +1,7 @@
 import torch
 # import kornia
 import torch.nn.functional as F
-
+import random
 # import matplotlib
 # matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -82,8 +82,8 @@ def test_kornia_affine(x):
 
     bs = points_test.shape[0]
     points_dst, points_src = complete_and_order(points_test)
-    print(points_dst)
-    print(points_src)
+    # print(points_dst)
+    # print(points_src)
     # Option 2: Hardcoded src points
     # points_src = torch.FloatTensor([[[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]]]).to(x.device)
     # points_src = (points_src - mean)/max
@@ -236,6 +236,142 @@ def get_affine_params(pts):
 
     return M_center, M_relocate
 
+# def get_affine_params(pts):
+#     bs, n_pts, xy = pts.shape
+#     I_factor = 1e-5
+#     assert n_pts == 2
+#     assert pts.max() <= 1 and pts.min() >= -1
+#     # print(pts[0])
+#     points_dst, points_src = complete_and_order(pts)
+#     M_center, M_relocate = get_affine_from_3pts(points_dst, points_src)
+#
+#     return M_center, M_relocate
+
+# def get_affine_params_from_chw(cen, hei, wid):
+#     '''
+#     Args:
+#         cen: center point for each object [bs, 1, 2]
+#         hei: one-sided height [bs, 1, 1]
+#         wid: one-sided width  [bs, 1, 1]
+#     Returns:
+#
+#     '''
+#     bs, _, xy = cen.shape
+#     assert cen.max() <= 1 and cen.min() >= -1
+#     # TODO: Clamp at the correct
+#     # print(pts[0])
+#     ...
+#     M_center, M_relocate = get_affine_from_3pts(points_dst, points_src)
+
+    return M_center, M_relocate
+
+def get_cell_idx(cen, ch, cw):
+    '''
+    Args:
+        cen: Center
+        ch: Number of H cells
+        cw: Number of W cells
+
+    Returns:
+        i, j indices of the cell where the center is located.
+    '''
+    ...
+
+
+def get_affine_params_from_pose(pose, pose_limits, pose_bias):
+    """ spatial transformer network used to scale and shift input according to z_where in:
+            1/ x -> x_att   -- shapes (H, W) -> (attn_window, attn_window) -- thus inverse = False
+            2/ y_att -> y   -- (attn_window, attn_window) -> (H, W) -- thus inverse = True
+    inverting the affine transform as follows: A_inv ( A * image ) = image
+    A = [R | T] where R is rotation component of angle alpha, T is [tx, ty] translation component
+    A_inv rotates by -alpha and translates by [-tx, -ty]
+    if x' = R * x + T  -->  x = R_inv * (x' - T) = R_inv * x - R_inv * T
+    here, z_where is 3-dim [scale, tx, ty] so inverse transform is [1/scale, -tx/scale, -ty/scale]
+    R = [[s, 0],  ->  R_inv = [[1/s, 0],
+         [0, s]]               [0, 1/s]]
+    """
+    pose = constrain_pose(pose, pose_limits, pose_bias)
+
+    # 1. construct 2x3 affine matrix for each datapoint in the minibatch
+    theta = torch.zeros(2, 3).repeat(pose.shape[0], 1, 1).to(pose.device)
+
+    # set scaling
+    theta[:, 0, 0] = pose[:, 0]
+    theta[:, 1, 1] = pose[:, 1]
+
+    # set translation
+    theta[:, 0, -1] = pose[:, 2]
+    theta[:, 1, -1] = pose[:, 3]
+
+    # Inverse
+    # 1. construct 2x3 affine matrix for each datapoint in the minibatch
+    theta_inv = torch.zeros(2, 3).repeat(pose.shape[0], 1, 1).to(pose.device)
+
+    # set scaling
+    theta_inv[:, 0, 0] = 1 / (pose[:, 0] + 1e-9)
+    theta_inv[:, 1, 1] = 1 / (pose[:, 1] + 1e-9)
+
+    # set translation
+    theta_inv[:, 0, -1] = - pose[:, 2] / (pose[:, 0] + 1e-9)
+    theta_inv[:, 1, -1] = - pose[:, 3] / (pose[:, 1] + 1e-9)
+
+    return theta, theta_inv
+
+def constrain_pose(pose, pose_limits, pose_bias):
+    '''
+    Constrain the value of the pose vectors.
+    '''
+    sx = torch.clamp(pose[:,0:1] + pose_bias[0], min= 1/pose_limits[0], max=0.8)
+    sy = torch.clamp(pose[:,1:2] + pose_bias[1], min= 1/pose_limits[1], max=0.8)
+    # sx = pose[:,0:1]
+    # sy = pose[:,1:2]
+
+    # tx = F.tanh(pose[:,2:3]) * (sx - 0.5)#+ pose_bias[2] # Bias should be 0
+    # ty = F.tanh(pose[:,3: ]) * (sy - 0.5)#, min= -pose_limits[3], max= pose_limits[3]) #+ pose_bias[3]
+    tx = torch.clamp(pose[:,2:3], min= -pose_limits[2], max= pose_limits[2]) #+ pose_bias[2] # Bias should be 0
+    ty = torch.clamp(pose[:,3: ], min= -pose_limits[3], max= pose_limits[3]) #+ pose_bias[3]
+    # tx = pose[:, 2:3]
+    # ty = pose[:, 3: ]
+    pose = torch.cat([sx, sy, tx, ty], dim=-1)
+    # if random.random() < 0.01:
+    #     print(pose[0])
+
+    # DDPAE's constrains
+    # scale = torch.clamp(pose[..., :1], scale_prior - 1, scale_prior + 1)
+    # xy = F.tanh(pose[..., 1:]) * (scale - 0.5)
+    # pose = torch.cat([scale, xy], dim=-1)
+    return pose
+
+def get_affine_from_3pts(pts_bb, pts_sqr):
+    bs, _, xy = pts_bb.shape
+    I_factor = 1e-5
+
+    three_zeros = torch.zeros(1, 3, 3).to(pts_sqr.device).repeat(bs, 1, 1)
+    points_src_one = torch.cat([pts_sqr, torch.ones(*pts_sqr.shape[:2], 1).to(pts_bb.device)], dim=-1)
+    src_x = torch.cat([points_src_one, three_zeros], dim=1)
+    src_y = torch.cat([three_zeros, points_src_one], dim=1)
+    A = torch.cat([src_x, src_y], dim=-1)
+
+    # the destination points are the image vertexes
+    pts_bb_vec = pts_bb.permute(0,2,1).reshape(bs, -1, 1)
+
+    M_center = torch.bmm(batch_pinv(A, I_factor=I_factor),
+                         pts_bb_vec
+                         ).reshape(bs, 2, 3)
+
+    points_src_one = torch.cat([pts_bb, torch.ones(*pts_bb.shape[:2], 1).to(pts.device)], dim=-1)
+    src_x = torch.cat([points_src_one, three_zeros], dim=1)
+    src_y = torch.cat([three_zeros, points_src_one], dim=1)
+    A = torch.cat([src_x, src_y], dim=-1)
+
+    pts_sqr_vec = pts_sqr.permute(0,2,1).reshape(bs, -1, 1)
+
+    M_relocate = torch.bmm(batch_pinv(A, I_factor=I_factor),
+                           pts_sqr_vec
+                           ).reshape(bs, 2, 3)
+
+    return M_center, M_relocate
+
 def warp_affine(x, M, h=None, w=None):
     if h is None and w is None:
         h, w = x.shape[-2:]
@@ -243,7 +379,7 @@ def warp_affine(x, M, h=None, w=None):
     if len(x.shape) is not 4:
         x = x.reshape(-1, *x.shape[-3:])
     bs = x.shape[0]
-    grid = F.affine_grid(M, torch.Size((bs, 1, h, w)))
+    grid = F.affine_grid(M, torch.Size((bs, 1, h, w))) # TODO: Out dims should be: bs, 2, h, w?
     image_warp = F.grid_sample(x, grid, mode='bilinear') #TODO: Check gradients of nearest
     return image_warp.reshape(*ini_shape[:-2], h, w)
 
@@ -287,7 +423,7 @@ def complete_and_order(two_pts):
     src_pts[:] = option_2
     src_pts[idx_h_switch] = option_1
 
-    return three_pts, src_pts
+    return three_pts, src_pts  #src are -1, 1
 
 
 # @staticmethod

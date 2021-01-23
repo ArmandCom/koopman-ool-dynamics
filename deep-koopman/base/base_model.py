@@ -1,5 +1,6 @@
 import torch.nn as nn
 import numpy as np
+import torch
 from abc import abstractmethod
 
 
@@ -24,3 +25,9 @@ class BaseModel(nn.Module):
         params = sum([np.prod(p.size()) for p in model_parameters])
         return super().__str__() + '\nTrainable parameters: {}'.format(params)
         # return super().__str__() + 'Nothing'
+
+    def init_weights(self, m):
+        if type(m) == nn.Linear:
+            torch.nn.init.xavier_uniform(m.weight)
+            m.bias.data.fill_(0.01)
+            # TODO: Initialize weights all

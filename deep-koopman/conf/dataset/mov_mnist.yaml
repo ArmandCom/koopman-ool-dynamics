@@ -2,9 +2,9 @@ name: "Koopman_Disentanglement"
 n_gpu: 1
 
 # Global variables
-n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
-image_size: &IS [64, 64] # Input image size
-seq_length: &SeqL 10 # Length of the observed sequence.
+n_timesteps: &NTS 1 # Number of timesteps seen in each state. Time length of the state
+image_size: &IS [128, 128] # Input image size
+seq_length: &SeqL 6 # Length of the observed sequence.
 n_objects: &Nobj 2
 
 log_step: 50
@@ -18,7 +18,7 @@ arch:
   type: "RecKoopmanModel"
   args:
     in_channels: 1
-    feat_dim: &Fdim 60
+    feat_dim: &Fdim 50
     g_dim: &Gdim 15
     u_dim: 2
     n_objects: *Nobj
@@ -39,7 +39,7 @@ data_loader:
     seq_stride: 1
     n_objects: *Nobj
     data_dir: "/home/acomasma/ool-dynamics/deep-koopman/data"
-    batch_size: 32
+    batch_size: 20
     shuffle: true
     training_split: 0.9
     validation_split: 0.1

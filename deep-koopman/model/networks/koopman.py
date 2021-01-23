@@ -213,6 +213,7 @@ class KoopmanOperators(nn.Module, ABC):
 
         self.residual = residual
         self.n_timesteps = n_timesteps
+        self.u_dim = u_dim
 
         ''' state '''
         # TODO: state_dim * n_timesteps if not hankel. Pass hankel as parameter.
@@ -231,10 +232,11 @@ class KoopmanOperators(nn.Module, ABC):
         # self.nlinear_u_mapping = nn.Sequential(nn.Linear(state_dim * n_timesteps, state_dim),
         #                                   nn.ReLU(),
         #                                   nn.Linear(state_dim, u_dim + 1))
-        self.gru_u_mapping = nn.GRU(state_dim * n_timesteps, u_dim, num_layers = 2, batch_first=True)
-        self.nlinear_u_mapping = nn.Sequential(nn.Linear(state_dim * n_timesteps, state_dim),
-                                          nn.ReLU(),
-                                          nn.Linear(state_dim, u_dim))
+
+        # self.gru_u_mapping = nn.GRU(state_dim * n_timesteps, u_dim, num_layers = 1, batch_first=True)
+        # self.nlinear_u_mapping = nn.Sequential(nn.Linear(state_dim * n_timesteps, state_dim),
+        #                                   nn.ReLU(),
+        #                                   nn.Linear(state_dim, u_dim))
 
         # the state for decoding phase is replaced with code of g_dim
         input_particle_dim = g_dim
@@ -273,22 +275,27 @@ class KoopmanOperators(nn.Module, ABC):
         """ state encoder """
         return self.mapping(states=states, psteps=psteps)
 
-    def to_u(self, states, temp):
+    def to_u(self, states, temp, ignore=False):
         """ state encoder """
         # u_dist = self.nlinear_u_mapping(states.reshape(-1, states.shape[-1]))
-        u_dist, _ = self.gru_u_mapping(states)
-        u_dist = u_dist.reshape(*states.shape[:-1], -1)
-        u = F.sigmoid(u_dist * temp)
+        if not ignore:
+            u_dist, _ = self.gru_u_mapping(states)
+            u_dist = u_dist.reshape(*states.shape[:-1], -1)
+            u = F.sigmoid(u_dist * temp)
 
-        # Note: Binarize
-        u_soft = u
-        zeros = torch.zeros_like(u)
-        ones = 1 - zeros
-        u_hard = torch.where(u > 0.5, ones, zeros)
-        u = u_hard - u_soft.detach() + u_soft
+            # Note: Binarize
+            u_soft = u
+            zeros = torch.zeros_like(u)
+            ones = 1 - zeros
+            u_hard = torch.where(u > 0.5, ones, zeros)
+            u = u_hard - u_soft.detach() + u_soft
 
-        # u_dist = F.relu(u_dist) # Note: Is relu necessary here?
-        # u = F.gumbel_softmax(u_dist, tau=1/temp, hard=True)[..., 1:]
+            # u_dist = F.relu(u_dist) # Note: Is relu necessary here?
+            # u = F.gumbel_softmax(u_dist, tau=1/temp, hard=True)[..., 1:]
+        else:
+            u_dist = torch.zeros(*states.shape[:-1], self.u_dim).to(states.device)
+            u = u_dist
+
         return u, u_dist
 
     # def to_g(self, states, hidden):

@@ -37,6 +37,19 @@ def diagonal_loss(M):
     # l1_M = l1_loss(M, mask).sum(-1).sum(-1).sum(-1).mean()
     return M_loss
 
+def kl_divergence_bern_bern(z_pres_logits, prior_pres_prob, eps=1e-15):
+    """
+    Compute kl divergence of two Bernoulli distributions
+    :param z_pres_logits: (B, ...)
+    :param prior_pres_prob: float
+    :return: kl divergence, (B, ...)
+    """
+    z_pres_probs = torch.sigmoid(z_pres_logits)
+    kl = z_pres_probs * (torch.log(z_pres_probs + eps) - torch.log(prior_pres_prob + eps)) + \
+         (1 - z_pres_probs) * (torch.log(1 - z_pres_probs + eps) - torch.log(1 - prior_pres_prob + eps))
+
+    return kl
+
 def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     # assert len(output) == 3 or len(output) == 5
 
@@ -90,7 +103,9 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=3, lambd=0.3):
     logprob_pred = pred_distr.log_prob(target[:, -pred.shape[1]:])\
         .flatten(start_dim=1).sum(1) # TODO: Check if correct.
 
-    '''Rec and pred losses'''
+
+    # kl_z_pres = kl_divergence_bern_bern(z_pres_logits, self.prior_z_pres_prob)
+
     posteriors = posteriors[:-1] # If only rec
     prior = Normal(torch.zeros(1).to(device), torch.ones(1).to(device))
     kl_loss = torch.stack([kl_divergence(post, prior).flatten(start_dim=1).sum(1) for post in posteriors]).sum(0)

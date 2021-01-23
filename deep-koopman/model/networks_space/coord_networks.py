@@ -221,10 +221,10 @@ class MaskNetwork(nn.Module):
         out = self.softmax(self.nn(x).squeeze(-1).squeeze(-1) / self.temp)
         return out
 
-class KeyPointsExtractor(nn.Module):
+class KeyPointsBroadcastExtractor(nn.Module):
 
     def __init__(self, feat_dyn_dim, hidden_dim, n_points, resolution=None, pos_enc=True):
-        super(KeyPointsExtractor, self).__init__()
+        super(KeyPointsBroadcastExtractor, self).__init__()
         self.temp = 1
         n_coords = 2 if pos_enc else 0
 
@@ -291,6 +291,96 @@ class KeyPointsExtractor(nn.Module):
 
         return sm_out, argsm_out
 
+class KeyPointsExtractor(nn.Module):
+
+    def __init__(self, feat_dyn_dim, hidden_dim, n_points, resolution=None, pos_enc=True):
+        super(KeyPointsExtractor, self).__init__()
+        self.temp = 1
+        n_coords = 2 if pos_enc else 0
+
+        if resolution is not None:
+            self.resolution = resolution
+        else:
+            self.resolution = [32, 32]
+
+        self.nn = nn.Sequential(
+            nn.Conv2d(feat_dyn_dim, hidden_dim * 2 * 2, 1), # 2, 2
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(hidden_dim, hidden_dim, 1),
+            nn.CELU(),
+            nn.BatchNorm2d(hidden_dim),
+
+            nn.Conv2d(hidden_dim, hidden_dim * 2 * 2, 1), # 4, 4
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1),
+            nn.CELU(),
+            nn.BatchNorm2d(hidden_dim),
+
+            nn.Conv2d(hidden_dim, hidden_dim * 2 * 2, 1), # 8, 8
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1),
+            nn.CELU(),
+            nn.BatchNorm2d(hidden_dim),
+
+            nn.Conv2d(hidden_dim, hidden_dim * 2 * 2, 1), # 16, 16
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.BatchNorm2d(hidden_dim),
+            nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1),
+            nn.CELU(),
+            nn.BatchNorm2d(hidden_dim),
+
+            nn.Conv2d(hidden_dim, hidden_dim//2 * 2 * 2, 1), # 32, 32
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.BatchNorm2d(hidden_dim//2),
+            nn.Conv2d(hidden_dim//2, n_points, 1),
+        )
+
+        self.softmax2d = nn.Softmax2d()
+
+        self.grids = Grid()
+        self.register_buffer('grid', self.grids._build_warping_grid(self.resolution))
+        # self.register_buffer('grid_softargmax', self.grids._build_softmax_grid(self.resolution))
+
+    def forward(self, x):
+
+        bsOT, dyn_feat = x.shape
+        dyn_feat_input = x[..., None, None]
+        pos_enc = self.grid.repeat(bsOT, 1, 1, 1) # 32 * 2 * 8, 7, 16, 16
+
+        sm_out = self.softmax2d(self.nn(dyn_feat_input) / self.temp)
+
+        argsm_out_map = sm_out.unsqueeze(2) * pos_enc.unsqueeze(1)
+        argsm_out = argsm_out_map.sum(-1).sum(-1)
+        argsm_out = torch.clamp(argsm_out, -1, 1)
+
+        return sm_out, argsm_out
+
+class PoseNet(nn.Module):
+
+    def __init__(self, feat_dyn_dim, pose_dim, hidden_dim = None):
+        super(PoseNet, self).__init__()
+        self.pose_dim = pose_dim
+
+        self.nn = nn.Sequential(
+            nn.Linear(feat_dyn_dim, feat_dyn_dim),
+            nn.ReLU(),
+            nn.Linear(feat_dyn_dim, pose_dim)
+        )
+
+    def forward(self, x): # prior_bias=torch.FloatTensor([[0,0,0]])
+
+        bsOT, dyn_feat = x.shape
+
+        pose = self.nn(x)
+        return pose
 
 class Grid():
     def __init__(self):

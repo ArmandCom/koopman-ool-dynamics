@@ -40,7 +40,7 @@ class MovingMNISTDataset(data.Dataset):
         #     else:
         #         self.dataset = load_fixed_set(root, False)
 
-        self.length = 2e4
+        self.length = 4e4
         idx_full = np.arange(self.length)
         np.random.seed(0)
         np.random.shuffle(idx_full)
@@ -64,7 +64,7 @@ class MovingMNISTDataset(data.Dataset):
         self.n_frames_total = self.n_frames_input + self.n_frames_output
         self.transform = transform
         # For generating data
-        self.image_size_ = 64
+        self.image_size_ = 128
         self.digit_size_ = 28
         self.step_length_ = 0.18
 

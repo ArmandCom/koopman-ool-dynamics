@@ -145,9 +145,10 @@ class Trainer(BaseTrainer):
         if output[6] is not None:
             u_plot = plot_representation(output[6][:, :output[6].shape[1]].cpu())
             self.writer.add_image('u', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
-        if output[10] is not None:
-            self.writer.add_image('output_0rec', make_grid(output[6][0].cpu(), nrow=output[0].shape[1], normalize=True))
-
+        # if output[10] is not None: # TODO: Ara el torno a posar
+        #     # print(output[10][0].max(), output[-1][0].min())
+        #     shape = output[10][0].shape
+        #     self.writer.add_image('objects', make_grid(output[10][0].permute(1, 2, 0, 3, 4).reshape(*shape[1:-2], -1, shape[-1]).cpu(), nrow=output[0].shape[1], normalize=True))
         self.writer.add_image('A', make_grid(A_plot, nrow=1, normalize=False))
         self.writer.add_image('g_repr', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
         self.writer.add_image('g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))

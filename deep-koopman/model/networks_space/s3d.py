@@ -369,19 +369,35 @@ class S3DG(nn.Module):
 ''' Modified and simplified S3D'''
 
 class STMessagePassing(nn.Module):
-    def __init__(self, in_chan, hidden_dim, out_chan, n_messages = 3):
+    def __init__(self, in_chan, hidden_dim, out_chan, kernel, stride, padding, n_messages = 3):
         super(STMessagePassing, self).__init__()
+        self.objs = kernel[-1] * kernel[-2]
+        self.n_messages = n_messages
 
-        layers = [BasicConv3d(in_chan, hidden_dim, kernel_size=3, stride=1, padding=1)]
+        layers = [BasicConv3d(in_chan, hidden_dim * self.objs , kernel_size=kernel, stride=stride, padding=padding)]
+        layers.append(Reshape(self.objs, hidden_dim))
         for i in range(n_messages - 2):
-            layers.append(BasicConv3d(hidden_dim, hidden_dim, kernel_size=3, stride=1, padding=1))
-        layers.append(BasicConv3d(hidden_dim, out_chan, kernel_size=3, stride=1, padding=1))
+            layers.append(BasicConv3d(hidden_dim, hidden_dim * self.objs, kernel_size=kernel, stride=stride, padding=padding))
+            layers.append(Reshape(self.objs, hidden_dim))
+        layers.append(nn.Conv3d(hidden_dim, out_chan * self.objs, kernel_size=kernel, stride=stride, padding=padding))
+        layers.append(Reshape(self.objs, out_chan))
 
         self.messages = nn.Sequential(*layers)
 
     def forward(self, x):
-        out = self.messages(x)
-        return out
+        x = self.messages(x)
+        return x
+
+class Reshape(nn.Module):
+    def __init__(self, chans, objs):
+        super(Reshape, self).__init__()
+        self.objs = objs
+        self.chans = chans
+
+    def forward(self, x):
+        x = x.reshape(x.shape[0], -1, self.objs, x.shape[-3]).permute(0,1,3,2).reshape(x.shape[0], self.chans, -1, int(torch.sqrt(self.objs)), int(torch.sqrt(self.objs)))
+        print(x.shape)
+        return x
 
 class Simple_S3D(nn.Module):
 
@@ -390,6 +406,8 @@ class Simple_S3D(nn.Module):
         self.features = nn.Sequential(
             STConv3d(input_channel, 64, kernel_size=7, stride=2, padding=3), # (64, 32, 32, 32)
             nn.MaxPool3d(kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1)),  # (64, 32, 16, 16) (Makes sense?)
+            STConv3d(64, 64, kernel_size=5, stride=1, padding=2), # (64, 32, 32, 32)
+            STConv3d(64, 64, kernel_size=3, stride=1, padding=1), # (64, 32, 32, 32)
             BasicConv3d(64, 64, kernel_size=1, stride=1), # (64, 32, 16, 16)
             STConv3d(64, 192, kernel_size=3, stride=1, padding=1),  # (192, 32, 16, 16)
             nn.MaxPool3d(kernel_size=(1,3,3), stride=(1,2,2), padding=(0,1,1)),  # (192, 32, 8, 8) (Makes sense?)
@@ -403,6 +421,8 @@ class Simple_S3D(nn.Module):
             # Mixed_4e(),# (528, 16, 14, 14)
             # Mixed_4f(),# (528, 16, 14, 14)
             nn.MaxPool3d(kernel_size=(1, 3, 3), stride=(1, 2, 2), padding=(0, 1, 1)), # (832, 32, 4, 4)
+            nn.Dropout3d(dropout_keep_prob),
+            # STMessagePassing(512, 512, chan_out, kernel=[5, 4, 4], stride=1, padding=[3,0,0], n_messages = 4),
             # nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 0, 0)), # (832, 8, 7, 7)
             # Mixed_5b(), # (832, 8, 7, 7)
             # PrintShape(),
@@ -410,7 +430,6 @@ class Simple_S3D(nn.Module):
             BasicConv3d(512, 512, kernel_size=(1, 4, 4), stride=1, padding=0), # (832, 512, 32, 1, 1)
             # BasicConv3d(832, 512, kernel_size=(1, 4, 4), stride=1, padding=0), # (832, 512, 32, 1, 1)
             # nn.AvgPool3d(kernel_size=(2, 7, 7), stride=1),# (1024, 8, 1, 1)
-            nn.Dropout3d(dropout_keep_prob),
             nn.Conv3d(512, chan_out * n_obj, kernel_size=1, stride=1, bias=True),# (400, chan*obj, 32, 1, 1)
         )
         self.spatial_squeeze = spatial_squeeze

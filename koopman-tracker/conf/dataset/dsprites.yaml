@@ -1,0 +1,91 @@
+name: "Koopman_Disentanglement"
+n_gpu: 1
+
+# Global variables
+n_timesteps: &NTS 2 # Number of timesteps seen in each state. Time length of the state
+image_size: &IS [64, 64] # Input image size
+seq_length: &SeqL 10 # Length of the observed sequence.
+n_objects: &Nobj 2
+
+log_step: 50
+
+loss: "embedding_loss"
+#loss: "explicit_embedding_loss"
+
+arch:
+  type: "RecKoopmanModel"
+  args:
+    in_channels: 1
+    feat_dim: &Fdim 20
+    g_dim: &Gdim 10
+    u_dim: 4
+    n_objects: *Nobj
+    I_factor: 0.01
+    n_blocks: 2
+    nf_particle: *Fdim
+    nf_effect: *Fdim
+    psteps: 1
+    n_timesteps: *NTS
+    ngf: 8
+    image_size: *IS
+
+data_loader:
+  type: "DlibLoader"
+#  type: "MovingMNISTLoader"
+  args:
+    dataset_name: "dsprites_noshape_norotation"
+#    dataset_name: ""
+    seq_length: *SeqL
+    seq_stride: 1
+    n_objects: *Nobj
+    data_dir: "/home/acomasma/ool-dynamics/deep-koopman/data"
+    batch_size: 32
+    shuffle: true
+    training_split: 0.9
+    validation_split: 0.1
+    dataset_reduction: 0.0 #0.94
+    num_workers: 2
+
+
+optimizer:
+  type: "Adam"
+  args:
+    lr: 0.0003
+    weight_decay: 0.0
+    amsgrad: true
+
+#optimizer:
+#  type: "Adam"
+#  args:
+#    lr: 0.0001
+#    betas: (0.9, 0.999)
+# optimizer = optim.Adam(params, lr=args.lr, betas=(args.beta1, 0.999))
+
+
+
+metrics: [] #["accuracy", "top_k_acc"]
+
+lr_scheduler:
+  type: "StepLR"
+  args:
+    step_size: 7
+    gamma: 0.3
+
+#lr_scheduler:
+#  type: "ReduceLROnPlateau"
+#  args:
+#    mode: 'min'
+#    factor: 0.6
+#    patience: 5
+#    verbose: True
+# scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.6, patience=2, verbose=True)
+
+trainer:
+  epochs: 100
+  save_dir: ""
+  save_period: 2
+  verbosity: 2
+  monitor: "min val_loss"
+  early_stop: 10
+  tensorboard: true
+  lambd: 0.0

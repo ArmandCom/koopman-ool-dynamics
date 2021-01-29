@@ -1,0 +1,82 @@
+name: "Koopman_Disentanglement"
+n_gpu: 1
+
+# Global variables
+n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
+image_size: &IS [128, 128] # Input image size
+seq_length: &SeqL 30 # Length of the observed sequence.
+n_objects: &Nobj 2
+
+log_step: 100
+
+loss: "embedding_loss"
+#loss: "explicit_embedding_loss"
+
+
+# TODO: probar betas=(0.5, 0.999))
+arch:
+  type: "RecKoopmanModel"
+  args:
+    in_channels: 1
+    feat_dim: &Fdim 50
+    g_dim: &Gdim 30
+    u_dim: 2
+    n_objects: *Nobj
+    I_factor: 1
+    n_blocks: 1
+    nf_particle: &Hdim 100
+    nf_effect: *Hdim
+    psteps: 1
+    n_timesteps: *NTS
+    ngf: 8
+    image_size: *IS
+    free_pred: 8
+
+data_loader:
+  type: "MovingMNISTLoader"
+  args:
+    dataset_name: ""
+    seq_length: *SeqL
+    seq_stride: 1
+    n_objects: *Nobj
+    data_dir: "/home/acomasma/ool-dynamics/deep-koopman/data"
+    batch_size: 40
+    shuffle: true
+    training_split: 0.9
+    validation_split: 0.1
+    dataset_reduction: 0.0 #0.94
+    num_workers: 2
+
+optimizer:
+  type: "Adam"
+  args:
+    lr: 3e-4
+    betas: [0.9, 0.999]
+    weight_decay: 0.0001
+    amsgrad: true
+
+metrics: [] #["accuracy", "top_k_acc"]
+
+#lr_scheduler:
+#  type: "StepLR"
+#  args:
+#    step_size: 20
+#    gamma: 0.3
+
+lr_scheduler:
+  type: "ReduceLROnPlateau"
+  args:
+    mode: 'min'
+    factor: 0.4
+    patience: 5
+    verbose: True
+
+trainer:
+  epochs: 200
+  save_dir: ""
+  save_period: 1
+  verbosity: 2
+  monitor: "min val_loss"
+  early_stop: 10
+  tensorboard: true
+  lambd: 0.0

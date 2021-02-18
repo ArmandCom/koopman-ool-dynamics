@@ -9,7 +9,7 @@ from functools import reduce
 
 class ImageEncoder(nn.Module):
 
-    def __init__(self, in_channels, feat_cte_dim, feat_dyn_dim, resolution, n_objects, ngf, n_layers, cte_app=False):
+    def __init__(self, in_channels, feat_cte_dim, feat_dyn_dim, resolution, n_objects, ngf, n_layers, cte_app=False, bs=40):
         super(ImageEncoder, self).__init__()
 
         self.feat_dyn_dim = feat_dyn_dim
@@ -77,8 +77,8 @@ class ImageEncoder(nn.Module):
 
         # self.linear_pos = nn.Linear(4, ch)
         self.register_buffer('pos_enc', self._build_grid(self.ori_resolution))
-        self.register_buffer('h_o_prev', torch.zeros(40, self.n_objects, self.dim_h_o))
-        self.register_buffer('y_e_prev', torch.zeros(40, self.n_objects, self.dim_y_e))
+        self.register_buffer('h_o_prev', torch.zeros(bs, self.n_objects, self.dim_h_o))
+        self.register_buffer('y_e_prev', torch.zeros(bs, self.n_objects, self.dim_y_e))
 
         self.cte_app = cte_app
         if self.cte_app:

@@ -108,38 +108,50 @@ class dynamics(nn.Module):
 
 class u_dynamics(nn.Module):
     # TODO: clip grads after Sigmoid()
-    def __init__(self, b, ud):
+    def __init__(self, b, s, ud):
         super(u_dynamics, self).__init__()
-        self.u_dynamics = nn.Linear(ud, b, bias=False)
-        self.linear_u_mapping = nn.Linear(b, ud)
+        self.u_dynamics = nn.Linear(ud*b, b, bias=False)
+        self.linear_u_mapping = nn.Linear(s, ud)
+        self.linear_u_mapping.weight.data = gaussian_init_2dim([s, ud], std=1)
+        self.nlinear_u_mapping = nn.Sequential(nn.Linear(s, s), nn.CELU(), self.linear_u_mapping)
+
 
         # self.u_dynamics.weight.data = gaussian_init_2dim([b, ud], std=1)
         self.u_dynamics.weight.data = torch.zeros_like(self.u_dynamics.weight.data) + 0.001
-
         # self.linear_u_mapping.weight.data = gaussian_init_2dim([b, ud], std=1)
 
         self.round = tut.Round()
+        self.count = 0
 
-    def forward(self, x, temp=1):
+    def forward(self, x, u=None, noise=True, propagate=True, temp=1):
         # x = x[:, 1:]
-        x_shape = x.shape
-        u_logit = self.linear_u_mapping(x)
 
-        # Option 1: Deterministic
-        u_y = u_logit
+        if propagate:
+            u = u[..., :, None]
+            x = x[..., None, :]
+            input = x*u
+            out = self.u_dynamics(input.reshape(x.shape[0], -1))
+            return out
 
-        # Option 1: Stochastic
-        # u_logit = u_logit.tanh() * 8.8
-        # u_post = ut.NumericalRelaxedBernoulli(logits=u_logit, temperature=temp)
-        # # Unbounded
-        # u_y = u_post.rsample()
+        else:
+            u_logit = self.nlinear_u_mapping(x)
+            if noise and self.count<8000:
+                u_logit = u_logit + torch.randn(u_logit.shape).to(u_logit.device)*0.1
+                self.count+=1
 
-        u = self.round(torch.sigmoid(u_y))
-        # u = self.sequential_switching(torch.zeros_like(u[:, :1]), u)
-        # u = self.accumulate_obs(torch.zeros_like(u[:, :1]), u)
-        x = self.u_dynamics(u)
-        return x, u, u_logit
+            # Option 1: Deterministic
+            # u_y = u_logit
 
+            # Option 1: Stochastic
+            u_logit = u_logit.tanh() * 8.8
+            u_post = ut.NumericalRelaxedBernoulli(logits=u_logit, temperature=temp)
+            # Unbounded
+            u_y = u_post.rsample()
+
+            u = self.round(torch.sigmoid(u_y / temp))
+            # u = self.sequential_switching(torch.zeros_like(u[:, :1]), u)
+            # u = self.accumulate_obs(torch.zeros_like(u[:, :1]), u)
+            return u, u_logit
 
 class dynamics_back(nn.Module):
     def __init__(self, b, omega):
@@ -171,18 +183,18 @@ class KoopmanOperators(nn.Module, ABC):
         input_particle_dim = state_dim * (n_timesteps + first_deriv_dim + sec_deriv_dim) #+ g_dim # g_dim added for recursive sampling
 
         self.mapping = encoderNet(input_particle_dim, g_dim, ALPHA=alpha)
-        self.composed_mapping = encoderNet(input_particle_dim, g_dim * 2, ALPHA=alpha)
+        # self.composed_mapping = encoderNet(input_particle_dim, g_dim * 2, ALPHA=alpha)
         self.inv_mapping = decoderNet(state_dim, g_dim, ALPHA=alpha, SN=False)
         self.dynamics = dynamics(g_dim, init_scale)
         self.backdynamics = dynamics_back(g_dim, self.dynamics)
-        self.u_dynamics = u_dynamics(g_dim, u_dim)
+        self.u_dynamics = u_dynamics(g_dim, state_dim, u_dim)
 
         # self.gru_u_mapping = nn.GRU(input_particle_dim, u_dim, num_layers = 1, batch_first=True)
         # self.linear_u_mapping = nn.Linear(u_dim, u_dim * 2)
         #
-        self.nlinear_u_mapping = nn.Sequential(nn.Linear(input_particle_dim, state_dim),
-                                          nn.ReLU(),
-                                          nn.Linear(state_dim, u_dim * 2))
+        # self.nlinear_u_mapping = nn.Sequential(nn.Linear(input_particle_dim, state_dim),
+        #                                   nn.ReLU(),
+        #                                   nn.Linear(state_dim, u_dim * 2))
 
 
         self.softmax = nn.Softmax(dim=-1)
@@ -241,96 +253,6 @@ class KoopmanOperators(nn.Module, ABC):
         selector = self.st_gumbel_softmax(sel_sm)
         return selector
 
-    def to_composed_g(self, states, psteps, temp=1):
-        """ state encoder """
-        # TODO: encode with differences
-        g, g_mask_logit = self.composed_mapping(states=states, psteps=psteps).chunk(2, dim=-1)
-
-        g_mask_logit = g_mask_logit.tanh() * 8.8
-        g_mask_post = ut.NumericalRelaxedBernoulli(logits=g_mask_logit, temperature=temp)
-        # Unbounded
-        g_mask_sample = g_mask_post.rsample()
-        g_mask = self.round(torch.sigmoid(g_mask_sample))
-        return g, g_mask, g_mask_logit
-
-    def to_u(self, states, temp, ignore=False):
-        # TODO: Encode differences to minimize increments.
-        """ state encoder """
-        # u_dist = self.nlinear_u_mapping(states.reshape(-1, states.shape[-1]))
-        # if not ignore:
-        #     u_logit, _ = self.gru_u_mapping(states)
-        #     u_logit = u_logit.reshape(*states.shape[:-1], -1)
-        #     # u = F.sigmoid(u_dist * temp)
-        #     u_post = u_logit.sigmoid()
-        #     u = self.st_gumbel_sigmoid(u_post)
-        #
-        #     # Note: Binarize
-        #     # u_soft = u
-        #     # zeros = torch.zeros_like(u)
-        #     # ones = 1 - zeros
-        #     # u_hard = torch.where(u > 0.5, ones, zeros)
-        #     # u = u_hard - u_soft.detach() + u_soft
-        #
-        #     # u_dist = F.relu(u_dist) # Note: Is relu necessary here?
-        #     # u = F.gumbel_softmax(u_dist, tau=1/temp, hard=True)[..., 1:]
-        # else:
-        #     u_logit = torch.zeros(*states.shape[:-1], self.u_dim).to(states.device)
-        #     u = u_logit
-        #     u_post = u_logit
-
-        if not ignore:
-            # Option 2: Absolute inputs
-            # rnn_out, _ = self.gru_u_mapping(states)
-            # rnn_out_shape = rnn_out.shape
-            # u_logit, u_feat = self.linear_u_mapping(rnn_out.reshape(-1, rnn_out_shape[-1])).reshape(*rnn_out_shape[:2], -1).chunk(2, dim=-1)
-            # # TODO: 0s the first and last
-            # u_logit = u_logit.reshape(*states.shape[:-1], -1).tanh() * 8.8
-            # u_post = ut.NumericalRelaxedBernoulli(logits=u_logit, temperature=temp)
-            # # Unbounded
-            # u_y = u_post.rsample()
-            # # in (0, 1)
-            # u = self.round(torch.sigmoid(u_y))
-            # u = u * u_feat
-
-            # Option 3: Difference with non-linear mapping
-            states = states[:, 1:]
-            states_shape = states.shape
-            # rnn_out, _ = self.gru_u_mapping(states)
-            # rnn_out_shape = rnn_out.shape
-            # u_logit, u_feat = self.linear_u_mapping(rnn_out.reshape(-1, rnn_out_shape[-1])).reshape(*rnn_out_shape[:2], -1).chunk(2, dim=-1)
-            u_logit, u_feat = self.nlinear_u_mapping(states.reshape(-1, states_shape[-1])).reshape(*states_shape[:2], -1).chunk(2, dim=-1)
-            # TODO: Try without u_feat
-            u_logit = u_logit.tanh() * 8.8
-            u_post = ut.NumericalRelaxedBernoulli(logits=u_logit, temperature=temp)
-            # Unbounded
-            u_y = u_post.rsample()
-            # in (0, 1)
-            u = self.round(torch.sigmoid(u_y))
-
-            # u = self.sequential_switching(torch.zeros_like(u[:, :1]), u)
-            # u = self.accumulate_obs(torch.zeros_like(u[:, :1]), u)
-            u = torch.cat([torch.zeros_like(u[:, :1]), u], dim =1)
-            # u = u * u_feat
-
-            # Option 4: u deterministic
-            # states = states[:, 1:]
-            # states_shape = states.shape
-            # # rnn_out, _ = self.gru_u_mapping(states)
-            # # rnn_out_shape = rnn_out.shape
-            # # u_logit, u_feat = self.linear_u_mapping(rnn_out.reshape(-1, rnn_out_shape[-1])).reshape(*rnn_out_shape[:2], -1).chunk(2, dim=-1)
-            # u_logit, u_feat = self.nlinear_u_mapping(states.reshape(-1, states_shape[-1])).reshape(*states_shape[:2], -1).chunk(2, dim=-1)
-            # u = self.round(torch.sigmoid(u_logit))
-            # u = torch.cat([torch.zeros_like(u[:, :1]), u], dim =1)
-            # u_post = None
-            # u_logit = None
-
-        else:
-            u = torch.zeros(*states.shape[:-1], self.u_dim).to(states.device)
-            u_post = None
-            u_logit = None
-        return u, u_post, u_logit
-
-
     def get_A_Ainv(self, get_A_inv=False, get_B=True):
         A = self.dynamics.dynamics.weight.data
         A_inv = None
@@ -357,7 +279,7 @@ class KoopmanOperators(nn.Module, ABC):
 
     def print_SV(self):
             U, S, V = torch.svd(self.dynamics.dynamics.weight.data)
-            print('Singular Values FW: ',str(S.data.detach().cpu().numpy()))
+            print('Singular Values FW:\n',str(S.data.detach().cpu().numpy()))
 
     def fit_block_diagonal(self, G, H, U, I_factor, n_objects=1):
         bs, T, N, D = G.size()
@@ -411,65 +333,6 @@ class KoopmanOperators(nn.Module, ABC):
         B_bw = None
         return B_fw, B_bw
 
-    def fit_with_AB(self, bs):
-        A = self.A.repeat(bs, 1, 1, 1, 1)
-        B = self.B.repeat(bs, 1, 1, 1, 1)
-
-        return A[:,0], B[:,0]
-
-    def fit_with_compositional_A(self, G, H, U, I_factor, with_B = True):
-
-        bs, T, N, D = G.size()
-        a_dim = U.shape[-1]
-
-        selector = self.to_selector(G)
-
-        # TODO: This fit can also be done by OLS, replicating G by num_sys, and therefore fitting for each selected system per observation.
-        block_size = D
-        a_block_size = a_dim
-
-        S = selector # bs*T, sel_size
-        A = torch.einsum('blij,bl->bij', self.A.repeat(bs * T, 1, 1, 1), S) # bs*T, A_dim, A_dim --> different at each batch item and timestep
-        # print((A[0] - self.A[0,0]).mean(), (A[0] - self.A[0,1]).mean(), (A[0] - self.A[0,2]).mean(), S[0])
-        if with_B:
-            H_prime = torch.bmm(G.reshape(-1, 1, block_size), A.reshape(-1, block_size, block_size  )).reshape(bs, T, N, D)
-            res = H - H_prime
-            res, U = res.reshape(bs, T, N, -1, block_size), \
-                     U.reshape(bs, T, N, -1, a_block_size)
-            res, U = res.permute(0, 3, 1, 2, 4), U.permute(0, 3, 1, 2, 4)
-
-            U = U.reshape(bs, T, N, -1, a_block_size)
-            U = U.permute(0, 3, 1, 2, 4)
-
-            # res = H - H_prime
-            B = torch.bmm(self.batch_pinv(U.reshape(bs * self.num_blocks, T * N, a_block_size), I_factor),
-                          res.reshape(bs * self.num_blocks, T * N, block_size)
-                          )
-
-            B = B.reshape(bs, self.num_blocks, a_block_size, block_size)
-        else:
-            B = torch.zeros(bs, self.num_blocks, a_block_size, block_size).to(self.A.device)
-
-        return A[:bs], B, selector.reshape(bs, T, -1).transpose(-2, -1)
-
-    # def linear_forward_block_diagonal(self, g, u, B):
-    #     """
-    #     :param g: B x N x D
-    #     :return:
-    #     """
-    #     ''' B x N x R D '''
-    #     bs, dim = g.shape
-    #     # dim = dim // self.n_timesteps #TODO:HANKEL This is for hankel view
-    #     a_block_size = B.shape[-2]
-    #     aug_g, u = g.reshape(-1, dim), u.reshape(-1, 1, a_block_size)
-    #
-    #     # new_g = torch.bmm(aug_g, A.reshape(-1, block_size, block_size_2  )).reshape(bs, 1, dim) + \
-    #     #         torch.bmm(u    , B.reshape(-1, a_block_size, block_size_2)).reshape(bs, 1, dim)
-    #
-    #     # No input
-    #     new_g = self.dynamics(aug_g).reshape(bs, 1, dim)
-    #     return new_g
-
     def linear_forward_no_input(self, g):
         """
         :param g: B x N x D
@@ -490,27 +353,64 @@ class KoopmanOperators(nn.Module, ABC):
         new_g = self.backdynamics(g).reshape(bs, dim)
         return new_g
 
-    def linear_forward(self, g):
+    def linear_forward_wrong(self, g, input):
         """
         :param g: B x N x D
         :return:
         """
         ''' B x N x R D '''
         bs, dim = g.shape
-        input, u, u_logit = self.u_dynamics(g)
         new_g = (self.dynamics(g) + input).reshape(bs, dim)
-        return new_g, u, u_logit
+        return new_g
 
-    def linear_backward(self, g):
+    def linear_forward(self, g, u):
         """
         :param g: B x N x D
         :return:
         """
         ''' B x N x R D '''
         bs, dim = g.shape
-        input, u, u_logit = self.u_dynamics(g)
-        new_g = (self.backdynamics(g) + input).reshape(bs, dim)
-        return new_g, u, u_logit
+        new_g = (self.dynamics(g) + self.u_dynamics(g, u, propagate=True)).reshape(bs, dim)
+        return new_g
+
+    # def linear_backward(self, g):
+    #     """
+    #     :param g: B x N x D
+    #     :return:
+    #     """
+    #     ''' B x N x R D '''
+    #     bs, dim = g.shape
+    #     input, u, u_logit = self.u_dynamics(g)
+    #     new_g = (self.backdynamics(g) + input).reshape(bs, dim)
+    #     return new_g, u, u_logit
+
+    def rollout_wrong(self, g, u, T, B, backward=False, clip=30, logit_out=False):
+        """
+        :param g: B x N x D
+        :param rel_attrs: B x N x N x R
+        :param T:
+        :return:
+        """
+        g = g.squeeze(1)
+        g_list = [g[:,None,:]]
+        u_list = [] # Note: Realize that first element of u_list corresponds to g(t) and first element of g_list to g(t+1)
+        u_logit_list = []
+        out_states = [self.inv_mapping(g)[:,None,:]]
+        for t in range(T):
+            if not backward:
+                input, u, u_logit = self.u_dynamics(out_states[t].squeeze(1))
+                if len(u_list) == 0:
+                    u_list.append(u[:, None, :])
+                    u_logit_list.append(u_logit[:, None, :])
+                g = self.linear_forward(g, input) # For single object
+            # else:
+            #     g, u, u_logit = self.linear_backward(g, u)
+            out_states.append(self.inv_mapping(g)[:,None,:])
+            g_list.append(g[:, None, :])
+            u_list.append(u[:, None, :])
+            u_logit_list.append(u_logit[:, None, :])
+        u_logit = torch.cat(u_logit_list, 1) if logit_out else None
+        return torch.cat(out_states, 1),torch.cat(g_list, 1), torch.cat(u_list, 1),  u_logit #torch.clamp(torch.cat(g_list, 1), min=-clip, max=clip)
 
     def rollout(self, g, u, T, B, backward=False, clip=30, logit_out=False):
         """
@@ -520,19 +420,25 @@ class KoopmanOperators(nn.Module, ABC):
         :return:
         """
         g = g.squeeze(1)
-        g_list = []
+        g_list = [g[:,None,:]]
         u_list = [] # Note: Realize that first element of u_list corresponds to g(t) and first element of g_list to g(t+1)
         u_logit_list = []
+        out_states = [self.inv_mapping(g)[:,None,:]]
         for t in range(T):
             if not backward:
-                g, u, u_logit = self.linear_forward(g) # For single object
-            else:
-                g, u, u_logit = self.linear_backward(g)
+                u, u_logit = self.u_dynamics(out_states[t].squeeze(1), propagate=False)
+                if len(u_list) == 0:
+                    u_list.append(u[:, None, :])
+                    u_logit_list.append(u_logit[:, None, :])
+                g = self.linear_forward(g, u) # For single object
+            # else:
+            #     g, u, u_logit = self.linear_backward(g, u)
+            out_states.append(self.inv_mapping(g)[:,None,:])
             g_list.append(g[:, None, :])
             u_list.append(u[:, None, :])
             u_logit_list.append(u_logit[:, None, :])
         u_logit = torch.cat(u_logit_list, 1) if logit_out else None
-        return torch.cat(g_list, 1), torch.cat(u_list, 1),  u_logit #torch.clamp(torch.cat(g_list, 1), min=-clip, max=clip)
+        return torch.cat(out_states, 1),torch.cat(g_list, 1), torch.cat(u_list, 1),  u_logit #torch.clamp(torch.cat(g_list, 1), min=-clip, max=clip)
 
     def rollout_no_input(self, g, u, T, B, backward=False, clip=30):
         """
@@ -542,14 +448,16 @@ class KoopmanOperators(nn.Module, ABC):
         :return:
         """
         g = g.squeeze(1)
-        g_list = []
+        g_list = [g[:,None,:]]
+        out_states = [self.inv_mapping(g)[:,None,:]]
         for t in range(T):
             if not backward:
                 g = self.linear_forward_no_input(g) # For single object
             else:
                 g = self.linear_backward_no_input(g)
+            out_states.append(self.inv_mapping(g)[:,None,:])
             g_list.append(g[:, None, :])
-        return torch.cat(g_list, 1), None, None #torch.clamp(torch.cat(g_list, 1), min=-clip, max=clip)
+        return torch.cat(out_states, 1), torch.cat(g_list, 1), None, None #torch.clamp(torch.cat(g_list, 1), min=-clip, max=clip)
 
 
     @staticmethod

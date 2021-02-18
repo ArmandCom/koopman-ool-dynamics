@@ -45,14 +45,15 @@ class Trainer(BaseTrainer):
         self.train_metrics.reset()
 
         for batch_idx, data in enumerate(self.data_loader):
-            data = overlap_objects_from_batch(data, self.config['n_objects'])
+            if self.config["data_loader"]["type"] == "MovingMNISTLoader":
+                data = overlap_objects_from_batch(data, self.config['n_objects'])
             target = data # Is data a variable?
             data, target = data.to(self.device), target.to(self.device)
 
             self.optimizer.zero_grad()
             output = self.model(data, epoch)
             loss, loss_particles = self.criterion(output, target,
-                                                  epoch_iter=(epoch, (epoch + 1)*batch_idx), lambd=self.config["trainer"]["lambd"])
+                                                  epoch_iter=(epoch, (epoch-1)*len(self.data_loader)+batch_idx), lambd=self.config["trainer"]["lambd"])
             loss = loss.mean()
 
             # Note: from space implementation
@@ -150,15 +151,26 @@ class Trainer(BaseTrainer):
             g_plot_pred = plot_representation   (output["obs_rec_pred"][:,output["rec"].shape[1]:].cpu())
             self.writer.add_image('d-g_repr_rec', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
             self.writer.add_image('e-g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
+        if output["obs_rec_pred_rev"] is not None:
+            g_plot = plot_representation        (output["obs_rec_pred_rev"].cpu())
+            self.writer.add_image('ea-g_repr_pred_rev', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
         if output["A"] is not None:
             A_plot = plot_matrix(output["A"])
             self.writer.add_image('f-A', make_grid(A_plot, nrow=1, normalize=False))
+        if output["Ainv"] is not None:
+            A_plot = plot_matrix(output["Ainv"])
+            self.writer.add_image('fa-A-inv', make_grid(A_plot, nrow=1, normalize=False))
+            AA_plot = plot_matrix(torch.mm(output["A"],output["Ainv"]))
+            self.writer.add_image('fb-AA', make_grid(AA_plot, nrow=1, normalize=False))
+        # else:
+        #     AA_plot = plot_matrix(torch.mm(output["A"],torch.pinverse(output["A"])))
+        #     self.writer.add_image('fb-AA', make_grid(AA_plot, nrow=1, normalize=False))
         if output["B"] is not None:
             B_plot = plot_matrix(output["B"])
             self.writer.add_image('g-B', make_grid(B_plot, nrow=1, normalize=False))
         if output["u"] is not None:
             u_plot = plot_representation(output["u"][:, :output["u"].shape[1]].cpu())
-            self.writer.add_image('e-gu', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
+            self.writer.add_image('eb-gu', make_grid(to_tensor(u_plot), nrow=1, normalize=False))
 
         # if output[10] is not None: # TODO: Ara el torno a posar
         #     # print(output[10][0].max(), output[-1][0].min())

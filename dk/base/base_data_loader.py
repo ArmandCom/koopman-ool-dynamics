@@ -10,7 +10,7 @@ class BaseDataLoader(DataLoader):
     """
     Base class for all data loaders
     """
-    def __init__(self, dataset, batch_size, shuffle, n_objects, validation_split, dataset_reduction, num_workers, collate_fn=default_collate):
+    def __init__(self, dataset, batch_size, shuffle, n_objects_to_repeat, validation_split, dataset_reduction, num_workers, collate_fn=default_collate):
         self.validation_split = validation_split
         self.shuffle = shuffle
 
@@ -19,7 +19,7 @@ class BaseDataLoader(DataLoader):
         # self.n_samples = len(dataset.images)
         self.n_samples = len(dataset.split)
 
-        self.sampler, self.valid_sampler = self._split_sampler(self.validation_split, dataset_reduction, n_objects)
+        self.sampler, self.valid_sampler = self._split_sampler(self.validation_split, dataset_reduction, n_objects_to_repeat)
 
         self.init_kwargs = {
             'dataset': dataset,
@@ -55,7 +55,6 @@ class BaseDataLoader(DataLoader):
 
         train_sampler = SubsetRandomSampler(train_idx)
         valid_sampler = SubsetRandomSampler(valid_idx)
-
         # WeightedRandomSampler doesn't work as expected.
         # valid_weights = np.zeros(self.n_samples)
         # train_weights = np.zeros(self.n_samples)

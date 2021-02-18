@@ -226,6 +226,10 @@ class NTMCell(nn.Module):
         # print(h_o_prev.device)
 
         k = self.linear_k(h_o_prev) # N * C2_2
+
+        if k.shape[0] != C.shape[0]:
+            k = k.repeat_interleave(k.shape[0]//C.shape[0], dim=0)
+            print(k.shape, C.shape)
         k_expand = k.unsqueeze(1).expand_as(C) # N * C2_1 * C2_2
         # Key strength, which equals to beta_pre.exp().log1p() + 1 but avoids 'inf' caused by exp()
         beta_pre = self.linear_b(h_o_prev)

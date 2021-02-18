@@ -1,8 +1,9 @@
 defaults:
   - dataset: mov_mnist
+#  - dataset: boun_balls
 #  - dataset: dsprites
 
-#resume: '/home/acomasma/ool-dynamics/koopman-tracker/outputs/test_4/Koopman_Disentanglement/models/checkpoint-epoch1.pth'
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_circle/Koopman_Disentanglement/models/checkpoint-epoch1.pth'
 resume:
 device:
 run_id:

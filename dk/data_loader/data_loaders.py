@@ -4,7 +4,7 @@ from base import BaseDataLoader
 from data_loader.ground_truth import named_data
 from data_loader.dlib_dataset import DisentanglementDataset
 from data_loader.moving_mnist_dataset import MovingMNISTDataset
-# from data_loader.bouncing_balls import BouncingBallsDataset
+from data_loader.bouncing_balls_dataset import BouncingBallsDataset
 import numpy as np
 
 class MnistDataLoader(BaseDataLoader):
@@ -58,17 +58,16 @@ class BouncingBallsLoader(BaseDataLoader):
     """
     disentanglement_lib dataset loading using BaseDataLoader
     """
-    def __init__(self, dataset_name, seq_length, seq_stride, n_objects, data_dir, batch_size, shuffle=True, training_split=0.9, validation_split=0.0, dataset_reduction=0, num_workers=1, training=True):
+    def __init__(self, dataset_name, seq_length, seq_stride, n_objects, data_dir, batch_size, image_size, shuffle=True, training_split=0.9, validation_split=0.0, dataset_reduction=0, num_workers=1, training=True):
 
 
-        total_batch_size = batch_size * n_objects
+        total_batch_size = batch_size
         self.data_dir = data_dir
         self.name = dataset_name
         transform = transforms.Compose([ToTensor()]) #Scale()
         self.dataset = BouncingBallsDataset(data_dir, training, seq_length,
-                                          0, 64, training_split, transform)
-
-        super().__init__(self.dataset, total_batch_size, shuffle, n_objects, validation_split, dataset_reduction, num_workers)
+                                          0, n_objects, image_size, training_split, transform)
+        super().__init__(self.dataset, total_batch_size, shuffle, 1, validation_split, dataset_reduction, num_workers)
 
 # elif opt.dset_name == 'bouncing_balls':
 # transform = transforms.Compose([vtransforms.Scale(opt.image_size),

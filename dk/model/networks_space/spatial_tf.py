@@ -5,12 +5,13 @@ import torch
 import torch.nn as nn
 
 class SpatialTransformation(nn.Module):
-    def __init__(self, wh, WH, zeta_s=.1, zeta_r=[1, 0.1]):
+    def __init__(self, wh, WH, out_channels, zeta_s=.2, zeta_r=[1, 0.2]): #Note: Changed from 0.1, 1-0.1
         super().__init__()
         self.bg = 0 # No background at this moment
         self.zeta_s, self.zeta_r = zeta_s, zeta_r
         self.w, self.h = wh
         self.W, self.H = WH
+        self.out_channels = out_channels
 
 
     def forward(self, y_e, y_p):
@@ -55,15 +56,18 @@ class SpatialTransformation(nn.Module):
         # Generate sampling grid
         # TODO: Generate the inverse trans_mat?
         # TODO: Repeat the channels depending on which feature map we relocate
-        grid = nn.functional.affine_grid(trans_mat, torch.Size((trans_mat.size(0), 1, self.W, self.H))) # N * H * W * 2 , align_corners=False
+        grid = nn.functional.affine_grid(trans_mat, torch.Size((trans_mat.size(0), self.out_channels, self.W, self.H))) # N * H * W * 2 , align_corners=False
         return grid, area
 
-    def warp_and_render(self, Y_a, Y_s, y_e, grid):
+    def warp_and_render(self, Y_a, Y_s, y_e, grid, use_confi=True):
         bs, ch, w, h = Y_a.shape
         if len(y_e.shape) == 2:
             y_e = y_e[..., None, None]
         # Y_s = Y_s.reshape(-1, 1, self.w, self.h) * y_e # NTO * 1 * h * w
-        Y_a = Y_a * y_e#* Y_s # NTO * D * h * w
+
+        if y_e.mean() < 0.5 and use_confi: # TODO: Independently for each object
+            Y_a = Y_a * y_e#* Y_s # NTO * D * h * w
+
         # X_s = nn.functional.grid_sample(Y_s, grid) # NTO * 1 * H * W align_corners = False
         X_s = None
         X_a = nn.functional.grid_sample(Y_a, grid) # NTO * D * H * W # locate object in 128x128 layout

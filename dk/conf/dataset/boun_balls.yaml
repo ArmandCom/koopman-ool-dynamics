@@ -5,38 +5,37 @@ n_gpu: 1
 n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
 image_size: &IS [128, 128] # Input image size
 seq_length: &SeqL 20 # Length of the observed sequence.
-n_objects: &Nobj 1
+n_objects: &Nobj 2
 
 log_step: 100
 
 loss: "embedding_loss"
 #loss: "explicit_embedding_loss"
 
-
 data_loader:
-  type: "MovingMNISTLoader"
+  type: "BouncingBallsLoader"
   args:
     dataset_name: ""
     seq_length: *SeqL
     seq_stride: 1
     n_objects: *Nobj
-    data_dir: "/home/acomasma/ool-dynamics/deep-koopman/data"
+    data_dir: "/home/acomasma/ool-dynamics/data"
     batch_size: &BS 40
     shuffle: true
-    training_split: 0.9
-    validation_split: 0.1
+    training_split: 0.8
+    validation_split: 0.2
     dataset_reduction: 0.0 #0.94
     num_workers: 2
-
+    image_size: *IS
 
 # TODO: probar betas=(0.5, 0.999))
 arch:
   type: "RecKoopmanModel"
   args:
-    in_channels: 1
-    feat_dim: &Fdim 50
-    g_dim: &Gdim 10
-    u_dim: 4
+    in_channels: 3
+    feat_dim: &Fdim 30
+    g_dim: &Gdim 15
+    u_dim: 2
     n_objects: *Nobj
     I_factor: 1
     n_blocks: 1
@@ -49,8 +48,6 @@ arch:
     free_pred: 15
     num_sys: 0
     batch_size: *BS
-
-
 optimizer:
   type: "Adam"
   args:

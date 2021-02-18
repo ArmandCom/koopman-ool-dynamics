@@ -52,6 +52,9 @@ def plot_representation(repr, instance=0):  # TODO: does this function belong he
 def plot_matrix(M, instance=0):
     if len(M.shape)==4:
         M = block_diagonal(M)
+    if len(M.shape)==2:
+        M = M.unsqueeze(0)
+        instance=0
     expand = 20
     side = M.shape[-1]
     M = M[instance, :, None, :, None].repeat(1, expand, 1, expand)

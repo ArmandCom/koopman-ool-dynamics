@@ -5,8 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 from base import BaseModel
 
-from model.networks_space import ImageEncoder, ImageDecoder, ImageBroadcastDecoder
-from model.networks_space.consistent_iterative_koopman import KoopmanOperators
+from model.networks_space import ImageEncoder, ImageDecoder, ImageBroadcastDecoder, KoopmanOperators
 from model.networks_space.spatial_tf import SpatialTransformation
 from torch.distributions import Normal, kl_divergence
 from functools import reduce
@@ -22,9 +21,9 @@ def _get_flat(x, keep_dim=False):
 
 class RecKoopmanModel(BaseModel):
     def __init__(self, in_channels, feat_dim, nf_particle, nf_effect, g_dim, u_dim,
-                 n_objects, free_pred = 1, I_factor=10, n_blocks=1, psteps=1, n_timesteps=1, ngf=8, image_size=[64, 64], num_sys=0, batch_size=40):
+                 n_objects, free_pred = 1, I_factor=10, n_blocks=1, psteps=1, n_timesteps=1, ngf=8, image_size=[64, 64], num_sys=0):
         super().__init__()
-        out_channels = in_channels
+        out_channels = 1
         n_layers = int(np.log2(image_size[0])) - 1
 
         self.u_dim = u_dim
@@ -47,7 +46,7 @@ class RecKoopmanModel(BaseModel):
         self.cte_app = True
         self.compositional = False
         self.with_u = True
-        self.deriv_in_state = False
+        self.deriv_in_state = True
         self.num_sys = num_sys
         self.composed_systems = True if self.num_sys > 0 else False
 
@@ -64,7 +63,7 @@ class RecKoopmanModel(BaseModel):
         # self.n_objects = reduce((lambda x, y: x * y), self.obj_resolution)
         self.n_objects = n_objects
 
-        self.spatial_tf = SpatialTransformation(self.cte_resolution, self.ori_resolution, out_channels=out_channels)
+        self.spatial_tf = SpatialTransformation(self.cte_resolution, self.ori_resolution)
 
         self.linear_f_cte_post = nn.Linear(2 * self.feat_cte_dim, 2 * self.feat_cte_dim)
         self.linear_f_dyn_post = nn.Linear(2 * self.feat_dyn_dim, 2 * self.feat_dyn_dim)
@@ -74,7 +73,7 @@ class RecKoopmanModel(BaseModel):
             self.image_decoder = ImageBroadcastDecoder(self.feat_cte_dim, out_channels, resolution=(16, 16)) # resolution=self.att_resolution
         else:
             self.image_decoder = ImageDecoder(self.feat_cte_dim, out_channels, dyn_dim = self.feat_dyn_dim)
-        self.image_encoder = ImageEncoder(in_channels, 2 * self.feat_cte_dim, self.feat_dyn_dim, self.att_resolution, self.n_objects, ngf, n_layers, cte_app=self.cte_app, bs=batch_size)  # feat_dim * 2 if sample here
+        self.image_encoder = ImageEncoder(in_channels, 2 * self.feat_cte_dim, self.feat_dyn_dim, self.att_resolution, self.n_objects, ngf, n_layers, cte_app=self.cte_app)  # feat_dim * 2 if sample here
         self.koopman = KoopmanOperators(feat_dyn_dim, nf_particle, nf_effect, g_dim, u_dim, n_timesteps, deriv_in_state=self.deriv_in_state,
                                         num_sys=num_sys, alpha=1, init_scale=1)
         self.count = 1
@@ -155,11 +154,11 @@ class RecKoopmanModel(BaseModel):
         if not self.compositional:
             g = self.koopman.to_g(f_dyn_state.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
             g = g.reshape(bs * self.n_objects, T_inp, *g.shape[1:])
-        # else:
-        #     g, g_mask, g_mask_logit = self.koopman.to_composed_g(f_dyn_state.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
-        #     g = g.reshape(bs * self.n_objects, T_inp, *g.shape[1:])
-        #     g_mask = g_mask.reshape(bs * self.n_objects, T_inp, *g_mask.shape[1:])[:, :1]
-        #     g = g * g_mask
+        else:
+            g, g_mask, g_mask_logit = self.koopman.to_composed_g(f_dyn_state.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
+            g = g.reshape(bs * self.n_objects, T_inp, *g.shape[1:])
+            g_mask = g_mask.reshape(bs * self.n_objects, T_inp, *g_mask.shape[1:])[:, :1]
+            g = g * g_mask
         output["g_bern_logit"] = g_mask_logit
 
         # Get shifted observations for sys ID
@@ -168,21 +167,31 @@ class RecKoopmanModel(BaseModel):
 
         # Sys ID
         selector = None
-        A, A_inv, AA_inv, B = self.koopman.get_A_Ainv(get_A_inv=False, get_B=True)
+        A_inv, AA_inv = None, None
+        if self.composed_systems:
+            if free_pred > 0:
+                G_tilde = g[randperm, :-1-free_pred, None]
+                H_tilde = g[randperm, 1:-free_pred, None]
+            else:
+                G_tilde = g[randperm, :-1, None]
+                H_tilde = g[randperm, 1:, None]
+            A, B, A_inv, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, :T_inp-free_pred-1], I_factor=self.I_factor, n_objects = self.n_objects) # Try not permuting U when inp is permutted
+        else:
+            A, A_inv, AA_inv, B = self.koopman.get_A_Ainv(get_A_inv=False, get_B=True)
+
         output["selector"] = selector
         output["Ainv"] = A_inv
         output["AAinv"] = AA_inv
 
         # Rollout from start_step onwards.
         output["u"] = None
-        output["u_rec"] = None
         start_step = 2 # g and u must be aligned!!
         # TODO: Accumulate, take initial conditions. With NN.
         if self.with_u:
-            S_for_pred, G_for_pred, u, u_logit = self.koopman.simulate(T=T_inp-start_step-1, g=g[:, start_step], u=None, B=None)
+            G_for_pred, u, u_logit = self.koopman.simulate(T=T_inp-start_step-1, g=g[:, start_step], u=None, B=None)
             output["u"] = u.reshape(bs * self.n_objects, -1, u.shape[-1])
         else:
-            S_for_pred, G_for_pred, u, u_logit = self.koopman.simulate_no_input(T=T_inp-start_step-1, g=g[:, start_step], u=None, B=None)
+            G_for_pred, u, u_logit = self.koopman.simulate_no_input(T=T_inp-start_step-1, g=g[:, start_step], u=None, B=None)
         output["u_bern_logit"] = u_logit
 
         G_for_pred_rev = None
@@ -208,13 +217,11 @@ class RecKoopmanModel(BaseModel):
                       "f_cte": f_cte[:, :, self.n_timesteps-1:self.n_timesteps-1 + T_inp],
                       "T": T_inp,
                       "name": "rec"})
-        cases.append({#"obs": G_for_pred,
-                      "obs": None,
-                      "pose": S_for_pred,
-                "confi": confi[:, :, -S_for_pred.shape[1]:],
-                "shape": shape[:, :, -S_for_pred.shape[1]:],
-                "f_cte": f_cte[:, :, -S_for_pred.shape[1]:],
-                "T": S_for_pred.shape[1],
+        cases.append({"obs": G_for_pred,
+                "confi": confi[:, :, -G_for_pred.shape[1]:],
+                "shape": shape[:, :, -G_for_pred.shape[1]:],
+                "f_cte": f_cte[:, :, -G_for_pred.shape[1]:],
+                "T": G_for_pred.shape[1],
                 "name": "pred"})
         # cases.append({"obs": G_for_pred[:, -free_pred:],
         #             "confi": confi[:, :, -free_pred:],
@@ -247,8 +254,6 @@ class RecKoopmanModel(BaseModel):
             else:
                 f_dyn_state = self.koopman.to_s(gcodes=_get_flat(case["obs"]),
                                           psteps=self.psteps)
-                u_rec = self.koopman.u_dynamics(f_dyn_state, u=None, propagate=False)[0]
-                output["u_rec"] = u_rec.reshape(bs * self.n_objects, case["T"], -1)
             f_dyns[case_name] = f_dyn_state.reshape(bs * self.n_objects, case["T"], -1)
 
             # Encode with raw pose and confidence features
@@ -287,6 +292,7 @@ class RecKoopmanModel(BaseModel):
                 outs[case_name], out_shape = self.spatial_tf.warp_and_render(dec_obj, case["shape"], confi, grid, use_confi=use_confi)
             else:
                 outs[case_name] = dec_obj * confi[..., None, None]
+
         output["dyn_features"] = f_dyns
 
         ''' Returned variables '''

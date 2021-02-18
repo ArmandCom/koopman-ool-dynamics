@@ -31,6 +31,9 @@ class MovingMNISTDataset(data.Dataset):
         '''
         super(MovingMNISTDataset, self).__init__()
 
+        self.motion_type = 'constant_vel'
+        # self.motion_type = 'circles'
+
         self.dataset = None
         # if is_train:
         #     self.mnist = load_mnist(root)
@@ -68,7 +71,7 @@ class MovingMNISTDataset(data.Dataset):
         self.digit_size_ = 28
         self.step_length_ = 0.25
 
-    def get_random_trajectory(self, seq_length):
+    def get_random_trajectory(self, seq_length, motion_type='constant_vel'):
         ''' Generate a random sequence of a MNIST digit '''
         canvas_size = self.image_size_ - self.digit_size_
         x = random.random()
@@ -80,26 +83,50 @@ class MovingMNISTDataset(data.Dataset):
 
         start_y = np.zeros(seq_length)
         start_x = np.zeros(seq_length)
-        for i in range(seq_length):
-            # Take a step along velocity.
-            y += v_y * self.step_length_
-            x += v_x * self.step_length_
 
-            # Bounce off edges.
-            if x <= 0:
-                x = 0
-                v_x = -v_x
-            if x >= 1.0:
-                x = 1.0
-                v_x = -v_x
-            if y <= 0:
-                y = 0
-                v_y = -v_y
-            if y >= 1.0:
-                y = 1.0
-                v_y = -v_y
-            start_y[i] = y
-            start_x[i] = x
+        if motion_type == 'circles':
+            y = y * 0.6 + 0.2
+            x = x * 0.6 + 0.2
+
+            R = random.random()*0.4 + 0.2
+            if x + R >= 1.0:
+                R = 1 - random.random()*0.1 - x
+            if x - R <= 0:
+                R = x - random.random()*0.1
+            if y + R >= 1.0:
+                R = 1 - random.random()*0.1 - y
+            if y - R <= 0:
+                R = y - random.random()*0.1
+
+            factor = 2
+            t = np.linspace(0, seq_length * self.step_length_ * factor, seq_length)
+
+            if random.random() < 0.5:
+                t = np.flip(t, axis=0)
+
+            start_x, start_y = R*np.cos(t) + x, R*np.sin(t) + y
+
+        if motion_type == 'constant_vel':
+            for i in range(seq_length):
+                # Take a step along velocity.
+                y += v_y * self.step_length_
+                x += v_x * self.step_length_
+
+                # Bounce off edges.
+                if x <= 0:
+                    x = 0
+                    v_x = -v_x
+                if x >= 1.0:
+                    x = 1.0
+                    v_x = -v_x
+                if y <= 0:
+                    y = 0
+                    v_y = -v_y
+                if y >= 1.0:
+                    y = 1.0
+                    v_y = -v_y
+                start_y[i] = y
+                start_x[i] = x
 
         # Scale to the size of the canvas.
         start_y = (canvas_size * start_y).astype(np.int32)
@@ -113,7 +140,7 @@ class MovingMNISTDataset(data.Dataset):
         data = np.zeros((self.n_frames_total, self.image_size_, self.image_size_), dtype=np.float32)
         for n in range(num_digits):
             # Trajectory
-            start_y, start_x = self.get_random_trajectory(self.n_frames_total)
+            start_y, start_x = self.get_random_trajectory(self.n_frames_total, motion_type=self.motion_type)
             ind = random.randint(0, self.mnist.shape[0] - 1)
             digit_image = self.mnist[ind]
             for i in range(self.n_frames_total):

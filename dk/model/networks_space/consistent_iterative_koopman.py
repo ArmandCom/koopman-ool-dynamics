@@ -74,7 +74,8 @@ class decoderNet(nn.Module):
         x = x.view(-1, 1, self.b)
         x = self.tanh(self.fc1(x))
         x = self.tanh(self.fc2(x))
-        x = self.tanh(self.fc3(x))
+        # x = self.tanh(self.fc3(x))
+        x = self.fc3(x)
         x = x.view(-1, self.N)
         return x
 
@@ -111,9 +112,9 @@ class u_dynamics(nn.Module):
     def __init__(self, b, s, ud):
         super(u_dynamics, self).__init__()
         self.u_dynamics = nn.Linear(ud*b, b, bias=False)
-        self.linear_u_mapping = nn.Linear(s, ud)
-        self.linear_u_mapping.weight.data = gaussian_init_2dim([s, ud], std=1)
-        self.nlinear_u_mapping = nn.Sequential(nn.Linear(s, s), nn.CELU(), self.linear_u_mapping)
+        self.linear_u_mapping = nn.Linear(s*2, ud)
+        # self.linear_u_mapping.weight.data = gaussian_init_2dim([s, ud], std=1)
+        self.nlinear_u_mapping = nn.Sequential(nn.Linear(s, s*2), nn.CELU(), self.linear_u_mapping)
 
 
         # self.u_dynamics.weight.data = gaussian_init_2dim([b, ud], std=1)
@@ -143,7 +144,7 @@ class u_dynamics(nn.Module):
             # u_y = u_logit
 
             # Option 1: Stochastic
-            u_logit = u_logit.tanh() * 8.8
+            # u_logit = u_logit.tanh() * 8.8
             u_post = ut.NumericalRelaxedBernoulli(logits=u_logit, temperature=temp)
             # Unbounded
             u_y = u_post.rsample()

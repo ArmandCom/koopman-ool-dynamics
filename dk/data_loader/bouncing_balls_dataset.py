@@ -27,7 +27,7 @@ class BouncingBallsDataset(data.Dataset):
         self.dataset = make_dataset(root, train)
         self.size = image_size
         self.scale = [self.size[0] / 800, self.size[1] / 800]
-        self.radius = int(60 * max(self.scale))
+        self.radius = int(60 * max(self.scale)) # Note: previously 60 *
 
         self.root = root
         self.is_train = train
@@ -36,8 +36,8 @@ class BouncingBallsDataset(data.Dataset):
         self.transform = transform
         self.return_positions = return_positions
 
-        self.colors = [(0, 255, 0),
-                       (255, 0, 0),
+        self.colors = [(10, 255, 0),
+                       (255, 10, 0),
                        (0, 0, 255),
                        (255, 0, 255),
                        (255, 255, 0),

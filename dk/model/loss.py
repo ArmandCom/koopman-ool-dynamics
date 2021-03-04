@@ -32,18 +32,29 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
     lambd_rec = 1
     lambd_pred = 0.7
     prior_pres_prob = 0
-    # prior_g_mask_prob = 0.0
+    prior_g_mask_prob = 0.0
     lambd_u = 0.0
     lambd_I = 0.0
     lambd_AE = 0.0
     lambd_u_rec = 0.0
-    # lambd_u = linear_annealing(rec.device, epoch_iter[1], start_step=200, end_step=40000, start_value=0.1, end_value=100)
+    prior_coll_prob = 0.0
+    lambd_sel = 0.0
+    # lambd_u = linear_annealing(rec.device, epoch_iter[1], start_step=1000, end_step=10000, start_value=0.1, end_value=10)
     # lambd_u_rec = linear_annealing(rec.device, epoch_iter[1], start_step=4000, end_step=40000, start_value=0, end_value=50)
-    lambd_AE = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=40000, start_value=10, end_value=200)
-    prior_pres_prob = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=40000, start_value=0.5, end_value=0.1)
-    # lambd_fit_error = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=40000, start_value=0, end_value=100)
-    lambd_pred = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=50000, start_value=0.7, end_value=1.5)
+    lambd_AE = linear_annealing(rec.device, epoch_iter[1], start_step=1000, end_step=10000, start_value=0.5, end_value=40)
+    # lambd_hrank = linear_annealing(rec.device, epoch_iter[1], start_step=5000, end_step=10000, start_value=1, end_value=10)
 
+    # prior_pres_prob = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=40000, start_value=0.4, end_value=0.2)
+    # prior_coll_prob = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=40000, start_value=0.1, end_value=0.01)
+    # lambd_fit_error = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=10000, start_value=0, end_value=5)
+    # lambd_pred = linear_annealing(rec.device, epoch_iter[1], start_step=10000, end_step=16000, start_value=0, end_value=1)
+    lambd_pred = linear_annealing(rec.device, epoch_iter[1], start_step=0, end_step=6000, start_value=0.0, end_value=1)
+
+
+    # Note: Bouncing balls
+    # lambd_AE = linear_annealing(rec.device, epoch_iter[1], start_step=10000, end_step=15000, start_value=1, end_value=30)
+    # lambd_pred = linear_annealing(rec.device, epoch_iter[1], start_step=10000, end_step=15000, start_value=0, end_value=1)
+    # lambd_sel = linear_annealing(rec.device, epoch_iter[1], start_step=1000, end_step=10000, start_value=0, end_value=10)
 
     '''Rec and pred losses'''
     # Shape latent: [bs, T-n_timesteps+1, 1, 64, 64]
@@ -81,11 +92,23 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
         kl_g_mask_loss = kl_divergence_bern_bern(g_mask_logit, prior_pres_prob=torch.FloatTensor([prior_g_mask_prob]).to(g_mask_logit.device)).sum()
         kl_bern_loss = kl_bern_loss + kl_g_mask_loss
 
+
+    '''Interaction bernoulli KL div loss'''
+    # if "u_bern_logit" == any(output.keys()):
+    if output["sel_bern_logit"] is not None and prior_coll_prob != 0:
+        sel_logit = output["sel_bern_logit"]
+        print(sel_logit.shape)
+        exit('check that sel_logit last dimension is the number of objects')
+        kl_sel_loss = kl_divergence_bern_bern(sel_logit, prior_pres_prob=torch.FloatTensor([prior_coll_prob/sel_logit.shape[-1]]).to(sel_logit.device)).sum()
+        kl_bern_loss = kl_bern_loss + kl_sel_loss
+
     '''Input bernoulli KL div loss'''
     # if "u_bern_logit" == any(output.keys()):
-    if output["u_bern_logit"] is not None:
+    l1_u = 0.0
+    if output["u_bern_logit"] is not None and prior_pres_prob != 0:
         u_logit = output["u_bern_logit"]
-        kl_u_loss = kl_divergence_bern_bern(u_logit, prior_pres_prob=torch.FloatTensor([prior_pres_prob]).to(u_logit.device)).sum()
+        kl_u_loss = kl_divergence_bern_bern(u_logit, prior_pres_prob=torch.FloatTensor([prior_pres_prob/u_logit.shape[-1]]).to(u_logit.device)).sum()
+        # We normalize the probability by the number of possible activations.
         kl_bern_loss = kl_bern_loss + kl_u_loss
         l1_u = torch.tensor(0.0).to(device)
     elif lambd_u != 0 and output["u"] is not None:
@@ -93,7 +116,7 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
         u: [bs, T, feat_dim]
         '''
         u = output["u"]
-        up_bound = 0.3
+        up_bound = 0.4
         N_elem = u.shape[0]
         l1_u_sparse = F.relu(l1_loss(u, torch.zeros_like(u)).mean() - up_bound)
         # l1_u_diff_sparse = F.relu(l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).mean() - up_bound) * u.shape[0] * u.shape[1]
@@ -109,41 +132,24 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
 
     nelbo = (kl_loss
              + kl_bern_loss
-             - logprob_rec_ori * lambd_rec
+             # - logprob_rec_ori * lambd_rec
              - logprob_rec * lambd_rec
              - logprob_pred     * lambd_pred
-             - logprob_pred_rev * lambd_pred
+             # - logprob_pred_rev * lambd_pred
              ).mean()
-
-    '''Cycle consistency'''
-    cyc_con_loss = torch.tensor(0.0).to(device)
-    if output["Ainv"] is not None and lambd_I != 0:
-        A_inv = output["Ainv"]
-        # cyc_con_loss = cycle_consistency_loss(A, A_inv) *lambd_I
-
-        Ik = torch.eye(A.shape[-1]).float().to(A.device)
-        cyc_con_loss = lambd_I *(torch.sum((torch.mm(A_inv, A) - Ik)**2) + \
-                                 torch.sum((torch.mm(A, A_inv) - Ik)**2) ) / (2.0*A.shape[-1])
-    elif lambd_I != 0:
-        A_inv = torch.pinverse(A)
-        # cyc_con_loss = cycle_consistency_loss(A, A_inv) *lambd_I
-
-        Ik = torch.eye(A.shape[-1]).float().to(A.device)
-        cyc_con_loss = lambd_I *(torch.sum((torch.mm(A_inv, A) - Ik)**2) + \
-                                 torch.sum((torch.mm(A, A_inv) - Ik)**2) ) / (2.0*A.shape[-1])
 
     AE_error = torch.tensor(0.0).to(device)
     if output["dyn_features"] is not None and lambd_AE != 0:
         dyn_feat = output["dyn_features"]
         rec_f_dyn = dyn_feat["rec"]
         pred_f_dyn = dyn_feat["pred"]
-
+        pred_f_dyn_1step = output["s_pred_1step"]
 
         T_pred_feat, _ = pred_f_dyn .shape[-2], pred_f_dyn .shape[-1]
         T_rec_feat, _ = rec_f_dyn .shape[-2], rec_f_dyn .shape[-1]
 
         # With reconstruction from original.
-        # ori_f_dyn = dyn_feat["rec_ori"]
+        ori_f_dyn = dyn_feat["rec_ori"]
         # T_ori_feat, dyn_dim = ori_f_dyn.shape[-2], ori_f_dyn.shape[-1]
         # AE_error = AE_error + lambd_AE * mse_loss(ori_f_dyn[:, -T_rec_feat:], rec_f_dyn).sum()
         # AE_error = AE_error + lambd_AE * mse_loss(ori_f_dyn[:, -T_pred_feat:], pred_f_dyn).sum()
@@ -154,6 +160,9 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
         # AE_error = AE_error + lambd_AE * mse_loss(ori_f_dyn[:, -T_pred_rev_feat:], pred_rev_f_dyn).sum()
 
         AE_error = AE_error + lambd_AE * mse_loss(rec_f_dyn[:, -T_pred_feat:], pred_f_dyn).sum()
+        AE_error = AE_error + lambd_AE * mse_loss(rec_f_dyn[:, 1:], pred_f_dyn_1step[:, :-1]).sum()
+
+        # TODO: add real autoencoding (input state to output state)
 
         # AE_distr = Normal(pred_f_dyn, 0.01)
         # AE_error = -lambd_AE * AE_distr.log_prob(rec_f_dyn[:, -T_pred_feat:]) \
@@ -164,13 +173,21 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
     fit_error = torch.tensor(0.0).to(device)
     if lambd_fit_error != 0:
         g_rec, g_pred = g[:, :T], g[:, T:]
-        T_min = min(T, g_pred.shape[1])
-        fit_error = fit_error + lambd_fit_error * mse_loss(g_rec[:, -T_min:], g_pred[:, -T_min:]).sum()
+        # T_min = min(T, g_pred.shape[1])
+
+        # Option 1: Long term
+        # fit_error = fit_error + lambd_fit_error * mse_loss(g_rec[:, -T_min:], g_pred[:, -T_min:]).sum()
+
+        # Option 2: Short term
+        g_pred_1step = output['g_pred_1step']
+        # g_pred_3step = output['g_pred_3step']
+        fit_error = fit_error + lambd_fit_error * mse_loss(g_pred_1step[:, :-1], g_rec[:, 1:]).sum()
+        # fit_error = fit_error + (lambd_fit_error/2) * l1_loss(g_pred_3step[:, :-3], g_rec[:, 3:]).sum()
 
     mse_u_loss = torch.tensor(0.0).to(device)
-    if output["u_rec"] is not None and output["u"] is not None:
+    if output["u_rec"] is not None and output["u"] is not None and lambd_u_rec!=0:
         u_rec, u = output["u_rec"], output["u"]
-        mse_u_loss = mse_u_loss + lambd_u_rec *  mse_loss(u_rec[:, -u.shape[1]:], u).sum()
+        mse_u_loss = mse_u_loss + lambd_u_rec *  l1_loss(u_rec[:, -u.shape[1]:], u).sum()
 
     '''Low rank G'''
     # Option 1:
@@ -185,18 +202,34 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
     #     logdet_H = torch.slogdet(g_for_koop[..., t:t+n_timesteps, :] + reg_mask)
     #     h_rank_loss = h_rank_loss + .01*(logdet_H[1]).mean()
     # Option 2:
-    h_rank_loss = 0.0
+    h_rank_loss = torch.tensor(0.0).to(device)
     if lambd_hrank != 0:
-        h_rank_loss = (l1_loss(A, torch.zeros_like(A)).sum(-1).sum(-1).sum()
+        # h_rank_loss = (l1_loss(A, torch.zeros_like(A)).sum(-1).sum(-1).sum()
                        # + l1_loss(B, torch.zeros_like(B)).sum(-1).sum(-1).mean()
-                       )
+                       # )
         # h_rank_loss = (l1_loss(A, torch.zeros_like(A)).sum(-1).sum(-1).sum()
         #                + l1_loss(B, torch.zeros_like(B)).sum(-1).sum(-1).sum())
+
+        h_rank_loss = torch.norm(A, p='nuc', dim=[0, 1]).sum()
         h_rank_loss = lambd_hrank * h_rank_loss
 
     '''Local geometry loss'''
     # g = g[:, :rec.shape[1]]
     # local_geo_loss = lambd_lg * local_geo(g, target[:, -g.shape[1]:])
+
+    '''Sel L1'''
+    l1_sel = torch.tensor(0.0).to(device)
+    if lambd_sel != 0 and output["sel"] is not None:
+        '''Input sparsity loss
+            u: [bs, T, feat_dim]
+        '''
+        sel = output["sel"]
+        up_bound = 0.3
+        N_elem = sel.shape[0]
+        l1_sel = F.relu(l1_loss(u, torch.zeros_like(u)).mean() - up_bound)
+        # l1_u_diff_sparse = F.relu(l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).mean() - up_bound) * u.shape[0] * u.shape[1]
+        l1_sel = lambd_sel * l1_sel * N_elem
+        # l1_u = lambd_u * l1_loss(u, torch.zeros_like(u)).mean()
 
     '''Total Loss'''
     loss = (  nelbo
@@ -205,13 +238,13 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
               + fit_error
               + AE_error
               # + mse_u_loss
-              # + cyc_con_loss
-              )
+              )/bs
+
 
     rec_mse = mse_loss(rec, target[:, -rec.shape[1]:]).mean(1).reshape(bs, -1).flatten(start_dim=1).sum(1).mean()
     pred_mse = mse_loss(pred, target[:, -pred.shape[1]:]).mean(1).reshape(bs, -1).flatten(start_dim=1).sum(1).mean()
 
-    return loss, {
+    dict_out = {
         'Rec mse':rec_mse,
         'Pred mse':pred_mse,
         'KL Loss':kl_loss.mean(),
@@ -219,12 +252,14 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
         # 'Pred llik':logprob_pred.mean(),
         # 'Cycle consistency Loss':cyc_con_loss,
         # 'H rank Loss':h_rank_loss,
-        # 'Fit error':fit_error,
+        'Fit error':fit_error,
         'AE error':AE_error,
         # 'G Pred Loss':fit_error,d
         # 'Local geo Loss':local_geo_loss,
         # 'mse_u':mse_u_loss,
     }
+
+    return loss, dict_out
 
 def nll_loss(output, target):
     return F.nll_loss(output, target)

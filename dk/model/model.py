@@ -4,11 +4,12 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import numpy as np
 from base import BaseModel
-
+from utils import util as ut
 from model.networks_space import ImageEncoder, ImageDecoder, ImageBroadcastDecoder
-from model.networks_space.consistent_iterative_koopman import KoopmanOperators
+from model.networks_space.relational_koopman_select import KoopmanOperators
 from model.networks_space.spatial_tf import SpatialTransformation
 from torch.distributions import Normal, kl_divergence
+from utils.util import linear_annealing
 from functools import reduce
 from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
@@ -21,13 +22,14 @@ def _get_flat(x, keep_dim=False):
     return x.reshape(torch.Size([x.size(0) * x.size(1)]) + x.size()[2:])
 
 class RecKoopmanModel(BaseModel):
-    def __init__(self, in_channels, feat_dim, nf_particle, nf_effect, g_dim, u_dim,
-                 n_objects, free_pred = 1, I_factor=10, n_blocks=1, psteps=1, n_timesteps=1, ngf=8, image_size=[64, 64], num_sys=0, batch_size=40):
+    def __init__(self, in_channels, feat_dim, nf_particle, nf_effect, g_dim, r_dim, u_dim,
+                 n_objects, free_pred = 1, I_factor=10, n_blocks=1, psteps=1, n_timesteps=1, ngf=8, image_size=[64, 64], with_interactions=False, batch_size=40, collision_margin=None, cte_app = True):
         super().__init__()
         out_channels = in_channels
         n_layers = int(np.log2(image_size[0])) - 1
 
         self.u_dim = u_dim
+        self.r_dim = r_dim
 
         # Set state dim with config, depending on how many time-steps we want to take into account
         self.image_size = image_size
@@ -37,19 +39,18 @@ class RecKoopmanModel(BaseModel):
         self.psteps = psteps
         self.g_dim = g_dim
         self.free_pred = free_pred
+        self.collision_margin = collision_margin
 
         # feat_dyn_dim = feat_dim // 8
-        feat_dyn_dim = 4
+        feat_dyn_dim = 4 # TODO: This can be higher and then only use 4 of the dimensions for reconstruction. The rest might be related to physics constants.
         self.feat_dyn_dim = feat_dyn_dim
         self.feat_cte_dim = feat_dim - feat_dyn_dim
 
         '''Flags'''
-        self.cte_app = True
-        self.compositional = False
+        self.cte_app = cte_app
         self.with_u = True
         self.deriv_in_state = False
-        self.num_sys = num_sys
-        self.composed_systems = True if self.num_sys > 0 else False
+        self.with_interactions = with_interactions
 
         self.ini_alpha = 1
         # Note:
@@ -58,13 +59,13 @@ class RecKoopmanModel(BaseModel):
 
 
         self.cte_resolution = (32, 32)
-        self.ori_resolution = (128, 128)
+        self.ori_resolution = image_size
         self.att_resolution = (16, 16)
         self.obj_resolution = (4, 4)
         # self.n_objects = reduce((lambda x, y: x * y), self.obj_resolution)
         self.n_objects = n_objects
 
-        self.spatial_tf = SpatialTransformation(self.cte_resolution, self.ori_resolution, out_channels=out_channels)
+        self.spatial_tf = SpatialTransformation(self.cte_resolution, self.image_size, out_channels=out_channels)
 
         self.linear_f_cte_post = nn.Linear(2 * self.feat_cte_dim, 2 * self.feat_cte_dim)
         self.linear_f_dyn_post = nn.Linear(2 * self.feat_dyn_dim, 2 * self.feat_dyn_dim)
@@ -74,46 +75,25 @@ class RecKoopmanModel(BaseModel):
             self.image_decoder = ImageBroadcastDecoder(self.feat_cte_dim, out_channels, resolution=(16, 16)) # resolution=self.att_resolution
         else:
             self.image_decoder = ImageDecoder(self.feat_cte_dim, out_channels, dyn_dim = self.feat_dyn_dim)
-        self.image_encoder = ImageEncoder(in_channels, 2 * self.feat_cte_dim, self.feat_dyn_dim, self.att_resolution, self.n_objects, ngf, n_layers, cte_app=self.cte_app, bs=batch_size)  # feat_dim * 2 if sample here
-        self.koopman = KoopmanOperators(feat_dyn_dim, nf_particle, nf_effect, g_dim, u_dim, n_timesteps, deriv_in_state=self.deriv_in_state,
-                                        num_sys=num_sys, alpha=1, init_scale=1)
+        self.image_encoder = ImageEncoder(in_channels, 2 * self.feat_cte_dim, self.feat_dyn_dim, self.att_resolution, self.n_objects, ngf, image_size, cte_app=self.cte_app, bs=batch_size)  # feat_dim * 2 if sample here
+        self.koopman = KoopmanOperators(feat_dyn_dim, nf_particle, nf_effect, g_dim, r_dim, u_dim, n_timesteps, deriv_in_state=self.deriv_in_state,
+                                        with_interactions = with_interactions, init_scale=1, collision_margin=collision_margin)
+
         self.count = 1
-    def _get_full_state_hankel(self, x, T):
-        '''
-        :param x: features or observations
-        :param T: number of time-steps before concatenation
-        :return: Columns of a hankel matrix with self.n_timesteps rows.
-        '''
-        if self.n_timesteps < 2:
-            return x, T
-        new_T = T - self.n_timesteps + 1
 
-        x = x.reshape(-1, T, *x.shape[2:])
-        new_x = []
-        for t in range(new_T):
-            new_x.append(torch.stack([x[:, t + idx]
-                                    for idx in range(self.n_timesteps)], dim=-1))
-        # torch.cat([ torch.zeros_like( , x[:,0,0:1]) + self.t_grid[idx]], dim=-1)
-        new_x = torch.stack(new_x, dim=1)
-
-        if self.deriv_in_state and self.n_timesteps > 2:
-            d_x = new_x[..., 1:] - new_x[..., :-1]
-            dd_x = d_x[..., 1:] - d_x[..., :-1]
-            new_x = torch.cat([new_x, d_x, dd_x], dim=-1)
-
-        return new_x.reshape(-1, new_T, new_x.shape[-2] * new_x.shape[-1]), new_T
-
-
-    def forward(self, input, epoch):
+    def forward(self, input, epoch_iter):
         # Note: Add annealing in SPACE
         bs, T, ch, h, w = input.shape
         output = {}
-
+        temp = linear_annealing(input.device, epoch_iter[1], start_step=4000, end_step=15000, start_value=1, end_value=0.001)
+        if self.collision_margin is not None:
+            self.koopman.collision_margin = linear_annealing(input.device, epoch_iter[1], start_step=1000, end_step=8000, start_value=0.5, end_value=0.22)
         # Model reduction.
         # K = 5
-        if self.count - epoch == 0:
+        if self.count - epoch_iter[0] == 0:
             self.koopman.print_SV()
             # self.koopman.limit_rank_k(k=K)
+            # self.koopman.limit_rank_th(th=0.1)
             # print('rank of A is ' + str(K) + '.')
             self.count += 1
 
@@ -137,71 +117,66 @@ class RecKoopmanModel(BaseModel):
         # returned_post.append(f_dyn_post)
 
         # Get delayed dynamic features
-        f_dyn_state, T_inp = self._get_full_state_hankel(f_dyn, T_inp)
+        f_dyn_state, T_inp = self.koopman.get_full_state_hankel(f_dyn, T_inp)
 
-        # Get inputs from delayed dynamic features
+        # f_dyn_state = f_dyn_state.reshape(bs, self.n_objects, T_inp, -1).permute(0, 2, 1, 3).reshape(bs * T_inp, self.n_objects, -1)
+        # ut.print_var_shape(f_dyn_state, 'f_dyn_state')
 
-        # if not self.with_u:
-        #     u, u_post, u_logit = self.koopman.to_u(f_dyn_state, temp=self.ini_alpha + epoch * self.incr_alpha, ignore=True)
-        #     u = torch.zeros_like(u)
-        # else:
-        #     u, u_post, u_logit = self.koopman.to_u(f_dyn_state, temp=self.ini_alpha + epoch * self.incr_alpha, ignore=False)
-        #     u_logit = u_logit.reshape(bs, self.n_objects, -1, u_logit.shape[-1])
-        # output["u_bern_logit"] = u_logit
+        g_stack, u_tp_rec, sel_tp_rec, selectors = self.koopman.to_g(f_dyn_state.reshape(bs, self.n_objects, T_inp, -1), temp=temp)
+        g = g_stack.sum(-1)
+        # ut.print_var_shape(g, 'g_out')
 
-        # Get observations from delayed dynamic features # TODO: We could map this to double of g. The other half being a one-hot vector. No need to sparsify
 
         g_mask_logit = None
-        if not self.compositional:
-            g = self.koopman.to_g(f_dyn_state.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
-            g = g.reshape(bs * self.n_objects, T_inp, *g.shape[1:])
-        # else:
-        #     g, g_mask, g_mask_logit = self.koopman.to_composed_g(f_dyn_state.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
-        #     g = g.reshape(bs * self.n_objects, T_inp, *g.shape[1:])
-        #     g_mask = g_mask.reshape(bs * self.n_objects, T_inp, *g_mask.shape[1:])[:, :1]
-        #     g = g * g_mask
         output["g_bern_logit"] = g_mask_logit
 
-        # Get shifted observations for sys ID
-        randperm = torch.arange(g.shape[0]) # No permutation
-        # randperm = torch.randperm(g.shape[0]) # No permutation
-
         # Sys ID
-        selector = None
-        A, A_inv, AA_inv, B = self.koopman.get_A_Ainv(get_A_inv=False, get_B=True)
-        output["selector"] = selector
-        output["Ainv"] = A_inv
-        output["AAinv"] = AA_inv
+        A = self.koopman.get_A()
 
         # Rollout from start_step onwards.
         output["u"] = None
+        output["sel"] = None
         output["u_rec"] = None
-        start_step = 2 # g and u must be aligned!!
-        # TODO: Accumulate, take initial conditions. With NN.
-        if self.with_u:
-            S_for_pred, G_for_pred, u, u_logit = self.koopman.simulate(T=T_inp-start_step-1, g=g[:, start_step], u=None, B=None)
-            output["u"] = u.reshape(bs * self.n_objects, -1, u.shape[-1])
-        else:
-            S_for_pred, G_for_pred, u, u_logit = self.koopman.simulate_no_input(T=T_inp-start_step-1, g=g[:, start_step], u=None, B=None)
-        output["u_bern_logit"] = u_logit
+        output["sel_rec"] = None
+
+        # TODO: Inverse dynamics?
+        g_pred_1step = self.koopman.rollout_1step(g_stack)
+        output["g_pred_1step"] = g_pred_1step.reshape(bs*self.n_objects, -1, g.shape[-1])
+        output["s_pred_1step"] = self.koopman.inv_mapping(g_pred_1step).reshape(bs*self.n_objects, -1, f_dyn.shape[-1])
+
+        start_step = 6 # g and u must be aligned!!
+        init_s = f_dyn.reshape(bs, self.n_objects, -1, f_dyn.shape[-1])[:, :, start_step:start_step+self.n_timesteps-1] # Last time step will be the converted g.
+        init_g = g[:, :, start_step:start_step+1]
+
+        logit_out = True if self.collision_margin is None else False
+        T_sim = T_inp-start_step-1
+        # u_sim = u_tp_rec[0][..., -T_sim:, :]
+        u_sim = None
+        # TODO: Return full state instead of current
+        S_for_pred, G_for_pred, u_tp, sel_tp, selectors_for_pred = self.koopman.simulate(T=T_sim, g=init_g, init_s=init_s, inputs=u_sim, temp=temp, logit_out=logit_out) #[B, N, T - n_ts - start_step, -1]
+        # ut.print_var_shape([S_for_pred, G_for_pred, u_tp[0]], 's, g, us after rollout', q=True)
+
+        if self.with_u and u_tp_rec[0] is not None:
+            output["u"] = u_tp_rec[0].reshape(bs * self.n_objects, -1, u_tp_rec[0].shape[-1])[:, :, -S_for_pred.shape[2]:] #TODO: Check! Used to be u.
+            output["u_rec"] = u_tp_rec[0].reshape(bs * self.n_objects, -1, u_tp_rec[0].shape[-1])
+        if self.with_interactions:
+            output["sel"] = sel_tp[0].reshape(bs * self.n_objects, -1, self.n_objects)
+            output["sel_rec"] = sel_tp_rec[0].reshape(bs * self.n_objects, -1, self.n_objects)
+
+        output["sel_bern_logit"] = sel_tp[1]
+        output["u_bern_logit"] = u_tp[1]
 
         G_for_pred_rev = None
-        # G_for_pred_rev =    self.koopman.simulate(T=T_inp-start_step-2, g=G_for_pred[:,-1], u=u[:,start_step:].flip(1), B=B, backward=True).flip(1) # Check
-        # G_for_pred_rev = torch.cat([G_for_pred_rev, G_for_pred[:,-1:]], dim=1) # TODO: Check that this is ok.
-        # G_for_pred_rev =    self.koopman.simulate(T=T_inp-start_step-2, g=g[:,-1], u=u[:,start_step:].flip(1), B=B, backward=True).flip(1) # Check
-        # G_for_pred_rev = torch.cat([G_for_pred_rev, g[:,-1:]], dim=1) # TODO: Check that this is ok.
-        # G_for_pred_rev =    self.koopman.simulate(T=T_inp-free_pred-1, g=g.flip(1)[:,free_pred],  u=u.flip(1)[:,free_pred], B=B, backward=True).flip(1) # From original pose
-        # G_for_pred_rev = G_for_pred_rev.reshape(bs * self.n_objects, -1, G_for_pred_rev.shape[-1])
         output["obs_rec_pred_rev"] = G_for_pred_rev
 
         cases = []
-        # cases.append({ "obs": None,
-        #                "pose": f_dyn,
-        #                "confi": confi,
-        #                "shape": shape,
-        #                "f_cte": f_cte,
-        #                "T": T,
-        #                "name": "rec_ori"})
+        # cases.append({"obs": None,
+        #               "pose": f_dyn.reshape(bs, self.n_objects, *f_dyn.shape[1:]),
+        #               "confi": confi,
+        #               "shape": shape,
+        #               "f_cte": f_cte,
+        #               "T": f_dyn.shape[1],
+        #               "name": "rec_ori"})
         cases.append({"obs": g,
                       "confi": confi[:, :, self.n_timesteps-1:self.n_timesteps-1 + T_inp],
                       "shape": shape[:, :, self.n_timesteps-1:self.n_timesteps-1 + T_inp],
@@ -211,10 +186,10 @@ class RecKoopmanModel(BaseModel):
         cases.append({#"obs": G_for_pred,
                       "obs": None,
                       "pose": S_for_pred,
-                "confi": confi[:, :, -S_for_pred.shape[1]:],
-                "shape": shape[:, :, -S_for_pred.shape[1]:],
-                "f_cte": f_cte[:, :, -S_for_pred.shape[1]:],
-                "T": S_for_pred.shape[1],
+                "confi": confi[:, :, -S_for_pred.shape[2]:],
+                "shape": shape[:, :, -S_for_pred.shape[2]:],
+                "f_cte": f_cte[:, :, -S_for_pred.shape[2]:],
+                "T": S_for_pred.shape[2],
                 "name": "pred"})
         # cases.append({"obs": G_for_pred[:, -free_pred:],
         #             "confi": confi[:, :, -free_pred:],
@@ -222,20 +197,10 @@ class RecKoopmanModel(BaseModel):
         #             "f_cte": f_cte[:, :, -free_pred:],
         #             "T": free_pred,
         #             "name": "pred"})
-        # cases.append({"obs": G_for_pred_rev,
-        #             "confi": confi[:, :, -G_for_pred_rev.shape[1]:],
-        #             "shape": shape[:, :, -G_for_pred_rev.shape[1]:],
-        #             "f_cte": f_cte[:, :, -G_for_pred_rev.shape[1]:],
-        #             "T": G_for_pred_rev.shape[1],
-        #             "name": "pred_rev"})
-        # cases.append({"obs": G_for_pred_rev,
-        #             "confi": confi[:, :, :G_for_pred_rev.shape[1]],
-        #             "shape": shape[:, :, :G_for_pred_rev.shape[1]],
-        #             "f_cte": f_cte[:, :, :G_for_pred_rev.shape[1]],
-        #             "T": G_for_pred_rev.shape[1],
-        #             "name": "pred_rev"})
         outs = {}
         f_dyns = {}
+        f_dyns["rec_ori"] = f_dyn
+
         # Recover partial shape with decoded dynamical features. Iterate with new estimates of the appearance.
         # Note: This process could be iterative.
         for idx, case in enumerate(cases):
@@ -243,17 +208,30 @@ class RecKoopmanModel(BaseModel):
             case_name = case["name"]
 
             if case["obs"] is None:
-                f_dyn_state = case["pose"].reshape(-1, case["pose"].shape[-1])
+                f_dyn_out = case["pose"].reshape(-1, case["pose"].shape[-1])
+                # ut.print_var_shape([case["pose"], f_dyn_out], 'State')
+                # print(case["T"])
+
             else:
-                f_dyn_state = self.koopman.to_s(gcodes=_get_flat(case["obs"]),
-                                          psteps=self.psteps)
-                u_rec = self.koopman.u_dynamics(f_dyn_state, u=None, propagate=False)[0]
-                output["u_rec"] = u_rec.reshape(bs * self.n_objects, case["T"], -1)
-            f_dyns[case_name] = f_dyn_state.reshape(bs * self.n_objects, case["T"], -1)
+                f_dyn_out = self.koopman.to_s(gcodes=case["obs"],
+                                          psteps=self.psteps).flatten(start_dim=0, end_dim=2)
+
+                # ut.print_var_shape([case["obs"], f_dyn_out], 'Obs and state for rec')
+                # print(case["T"])
+            f_dyns[case_name] = f_dyn_out.reshape(bs * self.n_objects, case["T"], -1)
 
             # Encode with raw pose and confidence features
-            # pose = f_dyn_state.tanh()
-            pose = torch.clamp(f_dyn_state, min=-1, max=1)
+            # Note: Clamp -1,1
+            # pose = torch.clamp(f_dyn_out, min=-1, max=1)
+            # Note: reflect instead of clamp
+            # pose  = f_dyn_out
+            # pose_ov_1 = F.relu(-(1 - F.relu(pose)))
+            # pose_un_neg1 = F.relu(-(1 - F.relu(-pose)))
+            # pose = pose - 2*pose_ov_1 + 2*pose_un_neg1
+            # Note: Tanh
+            # pose = f_dyn_out.tanh()
+            # Note: After clamping
+            pose = f_dyn_out
 
             # appearance features
             confi = case["confi"].reshape(bs * self.n_objects * case["T"], -1).tanh().abs()
@@ -290,7 +268,7 @@ class RecKoopmanModel(BaseModel):
         output["dyn_features"] = f_dyns
 
         ''' Returned variables '''
-        returned_g = torch.cat([g, G_for_pred], dim=1) # Observations
+        returned_g = torch.cat([g, G_for_pred], dim=2) # Observations
 
 
         # TODO: this process is unnecessary, can be done in the loop
@@ -309,7 +287,9 @@ class RecKoopmanModel(BaseModel):
         output["obs_rec_pred"] = returned_g.reshape(bs * self.n_objects, -1, returned_g.shape[-1])
         output["gauss_post"] = returned_post
         output["A"] = A
-        output["B"] = B
+        output["B"] = None
+        output["selectors_rec"] = selectors.reshape(bs * self.n_objects, -1, selectors.shape[-1])
+        output["selectors_pred"] = selectors_for_pred.reshape(bs * self.n_objects, -1, selectors_for_pred.shape[-1])
 
         # Option 1: one object mapped to 0
         # shape_o0 = o[0].shape

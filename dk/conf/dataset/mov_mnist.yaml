@@ -5,9 +5,9 @@ n_gpu: 1
 n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
 image_size: &IS [128, 128] # Input image size
 seq_length: &SeqL 20 # Length of the observed sequence.
-n_objects: &Nobj 1
+n_objects: &Nobj 2
 
-log_step: 100
+log_step: 50
 
 loss: "embedding_loss"
 #loss: "explicit_embedding_loss"
@@ -35,28 +35,30 @@ arch:
   args:
     in_channels: 1
     feat_dim: &Fdim 50
-    g_dim: &Gdim 10
+    g_dim: &Gdim 20
+    r_dim: 10
     u_dim: 4
     n_objects: *Nobj
     I_factor: 1
     n_blocks: 1
-    nf_particle: &Hdim 100
+    nf_particle: &Hdim 50
     nf_effect: *Hdim
     psteps: 1
     n_timesteps: *NTS
     ngf: 8
     image_size: *IS
     free_pred: 15
-    num_sys: 0
+    with_interactions: False
     batch_size: *BS
-
+    cte_app: False
+#    collision_margin: 0.3
 
 optimizer:
   type: "Adam"
   args:
-    lr: 5e-4
-    betas: [0.9, 0.999]
-    weight_decay: 0.0001
+    lr: 3e-4
+    betas: [0.5, 0.999]
+    weight_decay: 0.001
     amsgrad: true
 
 metrics: [] #["accuracy", "top_k_acc"]
@@ -72,7 +74,7 @@ lr_scheduler:
   args:
     mode: 'min'
     factor: 0.7
-    patience: 8
+    patience: 4
     verbose: True
 
 trainer:
@@ -81,6 +83,6 @@ trainer:
   save_period: 1
   verbosity: 2
   monitor: "min val_loss"
-  early_stop: 10
+  early_stop: 100
   tensorboard: true
   lambd: 0.0

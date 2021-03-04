@@ -3,8 +3,8 @@ n_gpu: 1
 
 # Global variables
 n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
-image_size: &IS [128, 128] # Input image size
-seq_length: &SeqL 20 # Length of the observed sequence.
+image_size: &IS [64, 64] # Input image size
+seq_length: &SeqL 15 # Length of the observed sequence.
 n_objects: &Nobj 2
 
 log_step: 100
@@ -12,6 +12,7 @@ log_step: 100
 loss: "embedding_loss"
 #loss: "explicit_embedding_loss"
 
+# Works after 13000 iters
 data_loader:
   type: "BouncingBallsLoader"
   args:
@@ -28,26 +29,31 @@ data_loader:
     num_workers: 2
     image_size: *IS
 
+
 # TODO: probar betas=(0.5, 0.999))
 arch:
   type: "RecKoopmanModel"
   args:
     in_channels: 3
-    feat_dim: &Fdim 30
-    g_dim: &Gdim 15
+    feat_dim: &Fdim 25
+    g_dim: &Gdim 10
+    r_dim: 10
     u_dim: 2
     n_objects: *Nobj
     I_factor: 1
     n_blocks: 1
-    nf_particle: &Hdim 100
+    nf_particle: &Hdim 30
     nf_effect: *Hdim
     psteps: 1
     n_timesteps: *NTS
     ngf: 8
     image_size: *IS
     free_pred: 15
-    num_sys: 0
+    with_interactions: True
     batch_size: *BS
+    cte_app: False
+    collision_margin: 0.3
+
 optimizer:
   type: "Adam"
   args:
@@ -68,7 +74,7 @@ lr_scheduler:
   type: "ReduceLROnPlateau"
   args:
     mode: 'min'
-    factor: 0.7
+    factor: 0.6
     patience: 8
     verbose: True
 
@@ -78,6 +84,6 @@ trainer:
   save_period: 1
   verbosity: 2
   monitor: "min val_loss"
-  early_stop: 10
+  early_stop: 100
   tensorboard: true
   lambd: 0.0

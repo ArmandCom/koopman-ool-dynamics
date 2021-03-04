@@ -69,7 +69,7 @@ class MovingMNISTDataset(data.Dataset):
         # For generating data
         self.image_size_ = 128
         self.digit_size_ = 28
-        self.step_length_ = 0.25
+        self.step_length_ = 0.2 # was 0.25
 
     def get_random_trajectory(self, seq_length, motion_type='constant_vel'):
         ''' Generate a random sequence of a MNIST digit '''
@@ -107,6 +107,7 @@ class MovingMNISTDataset(data.Dataset):
             start_x, start_y = R*np.cos(t) + x, R*np.sin(t) + y
 
         if motion_type == 'constant_vel':
+            elc = 1.2 # was 1.1 without inversions
             for i in range(seq_length):
                 # Take a step along velocity.
                 y += v_y * self.step_length_
@@ -115,16 +116,16 @@ class MovingMNISTDataset(data.Dataset):
                 # Bounce off edges.
                 if x <= 0:
                     x = 0
-                    v_x = -v_x
+                    v_x = -v_x * elc
                 if x >= 1.0:
                     x = 1.0
-                    v_x = -v_x
+                    v_x = -v_x * (1/elc)
                 if y <= 0:
                     y = 0
-                    v_y = -v_y
+                    v_y = -v_y * elc
                 if y >= 1.0:
                     y = 1.0
-                    v_y = -v_y
+                    v_y = -v_y * (1/elc)
                 start_y[i] = y
                 start_x[i] = x
 

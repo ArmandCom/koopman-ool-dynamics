@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 class SpatialTransformation(nn.Module):
-    def __init__(self, wh, WH, out_channels, zeta_s=.2, zeta_r=[1, 0.2]): #Note: Changed from 0.1, 1-0.1
+    def __init__(self, wh, WH, out_channels, zeta_s=.1, zeta_r=[1, 0.1]): #Note: Changed from 0.1, 1-0.1
         super().__init__()
         self.bg = 0 # No background at this moment
         self.zeta_s, self.zeta_r = zeta_s, zeta_r
@@ -25,7 +25,7 @@ class SpatialTransformation(nn.Module):
         # Generate 2D transformation matrix
         if len(y_e.shape) == 2:
             y_e = y_e[..., None, None]
-        scale, ratio, trans_x, trans_y = y_p.split(1, 1) # N * 1
+        trans_x, trans_y, scale, ratio = y_p.split(1, 1) # N * 1
         scale = 1 + self.zeta_s*scale
         ratio = self.zeta_r[0] + self.zeta_r[1]*ratio
         ratio_sqrt = ratio.sqrt()
@@ -65,8 +65,8 @@ class SpatialTransformation(nn.Module):
             y_e = y_e[..., None, None]
         # Y_s = Y_s.reshape(-1, 1, self.w, self.h) * y_e # NTO * 1 * h * w
 
-        if y_e.mean() < 0.5 and use_confi: # TODO: Independently for each object
-            Y_a = Y_a * y_e#* Y_s # NTO * D * h * w
+        # if y_e.mean() < 0.5 and use_confi: # TODO: Independently for each object
+        Y_a = Y_a * y_e#* Y_s # NTO * D * h * w
 
         # X_s = nn.functional.grid_sample(Y_s, grid) # NTO * 1 * H * W align_corners = False
         X_s = None

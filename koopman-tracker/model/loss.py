@@ -37,6 +37,32 @@ def diagonal_loss(M):
     # l1_M = l1_loss(M, mask).sum(-1).sum(-1).sum(-1).mean()
     return M_loss
 
+def cycle_consistency_loss(A, B):
+
+    loss_consist = 0.0
+    K = A.shape[-1]
+
+    for k in range(1,K+1):
+        As1 = A[:,:k]
+        Bs1 = B[:k,:]
+        As2 = A[:k,:]
+        Bs2 = B[:,:k]
+
+        Ik = torch.eye(k).float().to(A.device)
+
+        if k == 1:
+            loss_consist = (torch.sum((torch.mm(Bs1, As1) - Ik)**2) + \
+                            torch.sum((torch.mm(As2, Bs2) - Ik)**2) ) / (2.0*k)
+        else:
+            loss_consist += (torch.sum((torch.mm(Bs1, As1) - Ik)**2) + \
+                             torch.sum((torch.mm(As2, Bs2)-  Ik)**2) ) / (2.0*k)
+
+    #                Ik = torch.eye(K).float().to(device)
+    #                loss_consist = (torch.sum( (torch.mm(A, B)-Ik )**2)**1 + \
+    #                                         torch.sum( (torch.mm(B, A)-Ik)**2)**1 )
+
+    return loss_consist
+
 def kl_divergence_bern_bern(z_pres_logits, prior_pres_prob, eps=1e-15):
     """
     Compute kl divergence of two Bernoulli distributions
@@ -50,66 +76,54 @@ def kl_divergence_bern_bern(z_pres_logits, prior_pres_prob, eps=1e-15):
 
     return kl
 
-def embedding_loss(output, target, epoch_iter, n_iters_start=5, lambd=0.3):
+def embedding_loss(output, target, epoch_iter, n_iters_start=0, lambd=0.3):
     # assert len(output) == 3 or len(output) == 5
 
     # TODO: implement KL-div with Pytorch lib
     #  passar distribucio i sample. Distribucio es calcula abans. Use rsample, no te lies.
     #  G**2 es el numero de slots. Seria com el numero de timesteps, suposo. Hauria de deixar el batch i prou.
 
-    # rec, pred, g, posteriors, A, B, u, u_logit, g_for_koop, fit_error = output[0], output[1], output[2], output[3], \
-    #                                            output[4], output[5], output[6], \
-    #                                             output[7], output[8], output[9]
-
     rec = output["rec"]
     pred = output["pred"]
+    pred_rev = output["pred_rev"]
+
     g = output["obs_rec_pred"]
     posteriors = output["gauss_post"]
     A = output["A"]
     B = output["B"]
     u = output["u"]
-    u_logit = output["u_bern_logit"]
 
     # Get bs, T, n_obj; and take order into account.
     bs = rec.shape[0]
+    T = rec.shape[1]
     device = rec.device
     std_rec = .15
 
     # local_geo_loss = torch.zeros(1)
-    if epoch_iter[0] < n_iters_start:
-        lambd_lg = 1
-        lambd_hrank = 0.01
-        lambd_u = 2
+    if epoch_iter[0] < n_iters_start: #TODO: Add rec loss in G with spectralnorm. fit_error
+        # lambd_lg = 1
+        lambd_fit_error = 1
+        lambd_hrank = 0.05
+        lambd_rec = 1
         lambd_pred = 0.2
-        prior_pres_prob = 0.2
+        prior_pres_prob = 0.05
         prior_g_mask_prob = 0.8
+        lambd_u = 0.1
+        lambd_I = 1
     else:
-        lambd_lg = 1
-        lambd_hrank = 0.1
-        lambd_u = 5
+        # lambd_lg = 1
+        lambd_fit_error = 1
+        lambd_hrank = 0.2
+        lambd_rec = .7
         lambd_pred = 1
-        prior_pres_prob = 0.02
+        prior_pres_prob = 0.1
         prior_g_mask_prob = 0.4
-
-    '''Simple KL loss for reconstruction'''
-    # a = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-    # Shape latent: [bs, n_obj, T, dim]
-
-    # B, ch, h, w
-    # fg_dist = Normal(y_nobg, self.fg_sigma)
-    # fg_likelihood = fg_dist.log_prob(x)
-    # fg_likelihood = (fg_likelihood + (alpha_map + 1e-5).log())
-    # bg_likelihood = (bg_likelihood + (1 - alpha_map + 1e-5).log())
-    # # (B, 2, 3, H, W)
-    # log_like = torch.stack((fg_likelihood, bg_likelihood), dim=1)
-    # # (B, 3, H, W)
-    # log_like = torch.logsumexp(log_like, dim=1)
-    # # (B,)
-    # log_like = log_like.flatten(start_dim=1).sum(1)
+        lambd_u = 1
+        lambd_I = 1
 
     '''Rec and pred losses'''
     # Shape latent: [bs, T-n_timesteps+1, 1, 64, 64]
-    # TODO: Log_probs
+
     rec_distr = Normal(rec, std_rec)
     logprob_rec = rec_distr.log_prob(target[:, -rec.shape[1]:])\
         .flatten(start_dim=1).sum(1)
@@ -118,19 +132,35 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=5, lambd=0.3):
     logprob_pred = pred_distr.log_prob(target[:, -pred.shape[1]:])\
         .flatten(start_dim=1).sum(1) # TODO: Check if correct.
 
-    # TODO: Give inputs as dictionary.
-    # TODO: Log_prob of: pose before and after. Emphasize in prediction. Observations before and after? Watch out with latent-->0
+    pred_rev_distr = Normal(pred_rev, std_rec)
+    logprob_pred_rev = pred_rev_distr.log_prob(target[:, :pred_rev.shape[1]]) \
+    .flatten(start_dim=1).sum(1) # TODO: Check if correct.
 
     kl_bern_loss = 0
     '''G composition bernoulli KL div loss'''
+    # if "g_bern_logit" == any(output.keys()):
     if output["g_bern_logit"] is not None:
         g_mask_logit = output["g_bern_logit"] # TODO: Check shape
         kl_g_mask_loss = kl_divergence_bern_bern(g_mask_logit, prior_pres_prob=torch.FloatTensor([prior_g_mask_prob]).to(u_logit.device)).sum()
         kl_bern_loss = kl_bern_loss + kl_g_mask_loss
 
     '''Input bernoulli KL div loss'''
-    kl_u_loss = kl_divergence_bern_bern(u_logit, prior_pres_prob=torch.FloatTensor([prior_pres_prob]).to(u_logit.device)).sum()
-    kl_bern_loss = kl_bern_loss + kl_u_loss
+    # if "u_bern_logit" == any(output.keys()):
+    if output["u_bern_logit"] is not None:
+        u_logit = output["u_bern_logit"]
+        kl_u_loss = kl_divergence_bern_bern(u_logit, prior_pres_prob=torch.FloatTensor([prior_pres_prob]).to(u_logit.device)).sum()
+        kl_bern_loss = kl_bern_loss + kl_u_loss
+        l1_u = 0.
+    else:
+        '''Input sparsity loss
+        u: [bs, T, feat_dim]
+        '''
+        up_bound = 0.3
+        N_elem = u.shape[0]
+        l1_u_sparse = F.relu(l1_loss(u, torch.zeros_like(u)).mean() - up_bound)
+        # l1_u_diff_sparse = F.relu(l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).mean() - up_bound) * u.shape[0] * u.shape[1]
+        l1_u = lambd_u * l1_u_sparse * N_elem
+        # l1_u = lambd_u * l1_loss(u, torch.zeros_like(u)).mean()
 
     '''Gaussian vectors KL div loss'''
     posteriors = posteriors[:-1] # If only rec
@@ -139,14 +169,21 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=5, lambd=0.3):
 
     nelbo = (kl_loss
              + kl_bern_loss
-             - logprob_rec
-             - lambd_pred * logprob_pred #TODO: There's a mismatch here. Maybe prediction is supervised in the wrong way or sth. But this doesn't make sense.
+             - logprob_rec * lambd_rec
+             - logprob_pred     * lambd_pred #TODO: There's a mismatch here?
+             - logprob_pred_rev * lambd_pred
              ).mean()
 
-    '''Observation space likelihood loss'''
-    # T = (g.shape[1] -1)//2
-    # g_mse_loss = mse_loss(g[:, 1:T+1], g[:, T+1:]).sum(dim=-1).mean()
-    # g = g[:, :T]
+    '''Cycle consistency'''
+    if output["Ainv"] is not None:
+        A_inv = output["Ainv"]
+        cyc_conc_loss = cycle_consistency_loss(A, A_inv)
+
+    '''LSQ fit loss'''
+    # Note: only has correspondence if last frames of pred correspond to last frames of rec
+    g_rec, g_pred = g[:, :T], g[:, T:]
+    T_min = min(T, g_pred.shape[1])
+    fit_error = lambd_fit_error * mse_loss(g_rec[:, -T_min:], g_pred[:, -T_min:]).sum()
 
     '''Low rank G'''
     # Option 1:
@@ -171,15 +208,6 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=5, lambd=0.3):
     '''Input KL div.'''
     # KL loss for gumbel-softmax. We should use increasing temperature for softmax. Check SPACE pres variable.
 
-    '''Input sparsity loss
-        u: [bs, T, feat_dim]
-    '''
-    up_bound = 0.2
-    # l1_u_sparse = F.relu(l1_loss(u, torch.zeros_like(u)).mean() - up_bound)
-    # l1_u_diff_sparse = F.relu(l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).mean() - up_bound) * u.shape[0] * u.shape[1]
-    # l1_u = lambd_u * l1_u_diff_sparse
-    l1_u = l1_loss(u, torch.zeros_like(u)).mean()
-
 
     '''Local geometry loss'''
     # g = g[:, :rec.shape[1]]
@@ -188,13 +216,14 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=5, lambd=0.3):
     '''Total Loss'''
     loss = (  nelbo
             + h_rank_loss
-            # + l1_u
-            # + fit_error
+            + l1_u
+            + fit_error
+            + cyc_cons_loss
             # + local_geo_loss
             )
 
-    rec_mse = mse_loss(rec, target[:, -rec.shape[1]:]).reshape(bs * rec.shape[1], -1).flatten(start_dim=1).sum(1).mean()
-    pred_mse = mse_loss(pred, target[:, -pred.shape[1]:]).reshape(bs * pred.shape[1], -1).flatten(start_dim=1).sum(1).mean()
+    rec_mse = mse_loss(rec, target[:, -rec.shape[1]:]).mean(1).reshape(bs, -1).flatten(start_dim=1).sum(1).mean()
+    pred_mse = mse_loss(pred, target[:, -pred.shape[1]:]).mean(1).reshape(bs, -1).flatten(start_dim=1).sum(1).mean()
 
     return loss, {
               'Rec mse':rec_mse,
@@ -202,9 +231,10 @@ def embedding_loss(output, target, epoch_iter, n_iters_start=5, lambd=0.3):
               'KL Loss':kl_loss.mean(),
               # 'Rec llik':logprob_rec.mean(),
               # 'Pred llik':logprob_pred.mean(),
+              'Cycle consistency Loss':cyc_cons_loss,
               'H rank Loss':h_rank_loss,
-              # #'G Pred Loss':g_mse_loss,
+              'Fit error':fit_error,
               # 'G Pred Loss':fit_error,
               # 'Local geo Loss':local_geo_loss,
-              'l1_u':l1_u,
+              # 'l1_u':l1_u,
               }

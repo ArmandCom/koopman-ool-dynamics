@@ -21,7 +21,7 @@ def _get_flat(x, keep_dim=False):
 
 class RecKoopmanModel(BaseModel):
     def __init__(self, in_channels, feat_dim, nf_particle, nf_effect, g_dim, u_dim,
-                 n_objects, free_pred = 1, I_factor=10, n_blocks=1, psteps=1, n_timesteps=1, ngf=8, image_size=[64, 64]):
+                 n_objects, free_pred = 1, I_factor=10, n_blocks=1, psteps=1, n_timesteps=1, ngf=8, image_size=[64, 64], num_sys=0):
         super().__init__()
         out_channels = 1
         n_layers = int(np.log2(image_size[0])) - 1
@@ -36,15 +36,22 @@ class RecKoopmanModel(BaseModel):
         self.psteps = psteps
         self.g_dim = g_dim
         self.free_pred = free_pred
-        self.compositional = True
 
-        feat_dyn_dim = feat_dim // 8
+        # feat_dyn_dim = feat_dim // 8
         feat_dyn_dim = 4
         self.feat_dyn_dim = feat_dyn_dim
         self.feat_cte_dim = feat_dim - feat_dyn_dim
 
+        '''Flags'''
+        self.cte_app = True
+        self.compositional = False
         self.with_u = True
-        self.n_iters = 1
+        self.fixed_AB = False
+        self.fixed_A = True
+        self.deriv_in_state = True
+        self.num_sys = num_sys
+        self.composed_systems = True if self.num_sys > 0 else False
+
         self.ini_alpha = 1
         # Note:
         #  - I leave it to 0 now. If it increases too fast, the gradients might be affected
@@ -68,8 +75,9 @@ class RecKoopmanModel(BaseModel):
             self.image_decoder = ImageBroadcastDecoder(self.feat_cte_dim, out_channels, resolution=(16, 16)) # resolution=self.att_resolution
         else:
             self.image_decoder = ImageDecoder(self.feat_cte_dim, out_channels, dyn_dim = self.feat_dyn_dim)
-        self.image_encoder = ImageEncoder(in_channels, 2 * self.feat_cte_dim, self.feat_dyn_dim, self.att_resolution, self.n_objects, ngf, n_layers)  # feat_dim * 2 if sample here
-        self.koopman = KoopmanOperators(feat_dyn_dim, nf_particle, nf_effect, g_dim, u_dim, n_timesteps, n_blocks)
+        self.image_encoder = ImageEncoder(in_channels, 2 * self.feat_cte_dim, self.feat_dyn_dim, self.att_resolution, self.n_objects, ngf, n_layers, cte_app=self.cte_app)  # feat_dim * 2 if sample here
+        self.koopman = KoopmanOperators(feat_dyn_dim, nf_particle, nf_effect, g_dim, u_dim, n_timesteps, n_blocks, deriv_in_state=self.deriv_in_state,
+                                        fixed_A=(self.fixed_A or self.fixed_AB), fixed_B=self.fixed_AB, num_sys=num_sys)
 
     def _get_full_state_hankel(self, x, T):
         '''
@@ -88,6 +96,11 @@ class RecKoopmanModel(BaseModel):
                                     for idx in range(self.n_timesteps)], dim=-1))
         # torch.cat([ torch.zeros_like( , x[:,0,0:1]) + self.t_grid[idx]], dim=-1)
         new_x = torch.stack(new_x, dim=1)
+
+        if self.deriv_in_state and self.n_timesteps > 2:
+            d_x = new_x[..., 1:] - new_x[..., :-1]
+            dd_x = d_x[..., 1:] - d_x[..., :-1]
+            new_x = torch.cat([new_x, d_x, dd_x], dim=-1)
 
         return new_x.reshape(-1, new_T, new_x.shape[-2] * new_x.shape[-1]), new_T
 
@@ -120,58 +133,90 @@ class RecKoopmanModel(BaseModel):
         f_dyn_state, T_inp = self._get_full_state_hankel(f_dyn, T_inp)
 
         # Get inputs from delayed dynamic features
+
         if not self.with_u:
             u, u_post, u_logit = self.koopman.to_u(f_dyn_state, temp=self.ini_alpha + epoch * self.incr_alpha, ignore=True)
             u = torch.zeros_like(u)
-        else: u, u_post, u_logit = self.koopman.to_u(f_dyn_state, temp=self.ini_alpha + epoch * self.incr_alpha, ignore=False)
+        else:
+            u, u_post, u_logit = self.koopman.to_u(f_dyn_state, temp=self.ini_alpha + epoch * self.incr_alpha, ignore=False)
+            u_logit = u_logit.reshape(bs, self.n_objects, -1, u_logit.shape[-1])
+        output["u_bern_logit"] = u_logit
 
         # Get observations from delayed dynamic features # TODO: We could map this to double of g. The other half being a one-hot vector. No need to sparsify
 
+        g_mask_logit = None
         if not self.compositional:
             g = self.koopman.to_g(f_dyn_state.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
             g = g.reshape(bs * self.n_objects, T_inp, *g.shape[1:])
         else:
-            g, g_mask = self.koopman.to_composed_g(f_dyn_state.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
+            g, g_mask, g_mask_logit = self.koopman.to_composed_g(f_dyn_state.reshape(bs * self.n_objects * T_inp, -1), self.psteps)
             g = g.reshape(bs * self.n_objects, T_inp, *g.shape[1:])
             g_mask = g_mask.reshape(bs * self.n_objects, T_inp, *g_mask.shape[1:])[:, :1]
-            # g_mask = g_mask.reshape(bs * self.n_objects, T_inp, *g_mask.shape[1:])[:, :-1]
+            g = g * g_mask
+        output["g_bern_logit"] = g_mask_logit
+
+        # g_mask = g_mask.reshape(bs * self.n_objects, T_inp, *g_mask.shape[1:])[:, :-1]
             #TODO: same for all time-steps? or different at each time step?
+
+        # if not self.with_u:
+        #     u, u_post, u_logit = self.koopman.to_u(g, temp=self.ini_alpha + epoch * self.incr_alpha, ignore=True)
+        #     u = torch.zeros_like(u)
+        # else: u, u_post, u_logit = self.koopman.to_u(g, temp=self.ini_alpha + epoch * self.incr_alpha, ignore=False)
+
 
         # Get shifted observations for sys ID
         randperm = torch.arange(g.shape[0]) # No permutation
         # randperm = torch.randperm(g.shape[0]) # No permutation
 
-        if not self.compositional:
-            g_mask = torch.ones_like(g[:, :1])
+        # if not self.compositional:
+        #     g_mask = torch.ones_like(g[:, :1, None])
 
-        if free_pred > 0:
-            G_tilde = g[randperm, :-1-free_pred, None] * g_mask
-            H_tilde = g[randperm, 1:-free_pred, None] * g_mask
+        if self.fixed_AB:
+            A = self.koopman.A.repeat_interleave(bs * self.n_objects, dim=0)
+            B = self.koopman.B.repeat_interleave(bs * self.n_objects, dim=0)
+
         else:
-            G_tilde = g[randperm, :-1, None] * g_mask
-            H_tilde = g[randperm, 1:, None] * g_mask
+            if free_pred > 0:
+                G_tilde = g[randperm, :-1-free_pred, None]
+                H_tilde = g[randperm, 1:-free_pred, None]
+            else:
+                G_tilde = g[randperm, :-1, None]
+                H_tilde = g[randperm, 1:, None]
 
-        # Sys ID
-        A, B, A_inv, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, :T_inp-free_pred-1], I_factor=self.I_factor) # Try not permuting U when inp is permutted
+            # Sys ID
+        selector = None
+        if self.fixed_A and not self.composed_systems and not self.fixed_AB:
+            A, B = self.koopman.system_identify_with_A(G=G_tilde, H=H_tilde, U=u[randperm, :T_inp-free_pred-1], I_factor=self.I_factor) # Try not permuting U when inp is permutted
+        elif not self.composed_systems and not self.fixed_AB:
+            A, B, A_inv, fit_err = self.koopman.system_identify(G=G_tilde, H=H_tilde, U=u[randperm, :T_inp-free_pred-1], I_factor=self.I_factor, n_objects = self.n_objects) # Try not permuting U when inp is permutted
+        elif not self.fixed_AB:
+            A, B, selector = self.koopman.system_identify_with_compositional_A(G=G_tilde, H=H_tilde, U=u[randperm, :T_inp-free_pred-1], I_factor=self.I_factor, with_B=self.with_u)
+        output["selector"] = selector
+
+
 
         # Rollout from start_step onwards.
         start_step = 0 # g and u must be aligned!!
-        # TODO: Re-check: Why a constant g is valid. Unless t-1 contains time t. pero aun asi no se yo. ITS MAKING THE BOX BIGGER! CONSTRAIN AFTER KOOPMAN.
         G_for_pred = self.koopman.simulate(T=T_inp-start_step-1, g=g[:,start_step], u=u[:,start_step:], A=A, B=B)
-        g_for_koop= G_for_pred
 
         # TODO: predict pose and confi with logits
         rec = {"obs": g,
-               "confi": confi[:, :, self.n_timesteps-1:self.n_timesteps-1 + T_inp], # TODO: Set confi to 1 after some epochs (increase temp of sigmoid)
+               "confi": confi[:, :, self.n_timesteps-1:self.n_timesteps-1 + T_inp],
                "shape": shape[:, :, self.n_timesteps-1:self.n_timesteps-1 + T_inp],
                "f_cte": f_cte[:, :, self.n_timesteps-1:self.n_timesteps-1 + T_inp],
                "T": T_inp,
                "name": "rec"}
-        pred = {"obs": G_for_pred,
-                "confi": confi[:, :, -G_for_pred.shape[1]:],
-                "shape": shape[:, :, -G_for_pred.shape[1]:],
-                "f_cte": f_cte[:, :, -G_for_pred.shape[1]:],
-                "T": G_for_pred.shape[1],
+        # pred = {"obs": G_for_pred,
+        #         "confi": confi[:, :, -G_for_pred.shape[1]:],
+        #         "shape": shape[:, :, -G_for_pred.shape[1]:],
+        #         "f_cte": f_cte[:, :, -G_for_pred.shape[1]:],
+        #         "T": G_for_pred.shape[1],
+        #         "name": "pred"}
+        pred = {"obs": G_for_pred[:, -free_pred:],
+                "confi": confi[:, :, -free_pred:],
+                "shape": shape[:, :, -free_pred:],
+                "f_cte": f_cte[:, :, -free_pred:],
+                "T": free_pred,
                 "name": "pred"}
         outs = {}
 
@@ -181,7 +226,6 @@ class RecKoopmanModel(BaseModel):
         for idx, case in enumerate([rec, pred]):
 
             case_name = case["name"]
-
             f_dyn_state = self.koopman.to_s(gcodes=_get_flat(case["obs"]),
                                           psteps=self.psteps)
 
@@ -190,13 +234,20 @@ class RecKoopmanModel(BaseModel):
             # confi = f_dyn_state[..., :confi.shape[-1]].reshape(bs * self.n_objects * case["T"], -1).tanh().abs()
 
             # appearance features
-            f_cte = case["f_cte"].reshape(bs * self.n_objects * case["T"], -1)
             confi = case["confi"].reshape(bs * self.n_objects * case["T"], -1).tanh().abs()
 
             # Sample appearance (we call appearance features f_cte)
-            f_mu_cte, f_logvar_cte = self.linear_f_cte_post(f_cte).reshape(bs, self.n_objects, case["T"], -1).chunk(2, -1)
-            f_cte_post = Normal(f_mu_cte, F.softplus(f_logvar_cte))
-            f_cte = f_cte_post.rsample().reshape(bs * self.n_objects * case["T"], -1)
+            if self.cte_app:
+                f_cte = case["f_cte"][:, :, 0].reshape(bs * self.n_objects, -1)
+                f_mu_cte, f_logvar_cte = self.linear_f_cte_post(f_cte).reshape(bs, self.n_objects, 1, -1).chunk(2, -1)
+                f_cte_post = Normal(f_mu_cte, F.softplus(f_logvar_cte))
+                f_cte = f_cte_post.rsample().repeat_interleave(case["T"], dim=2).reshape(bs * self.n_objects * case["T"], -1)
+            else:
+                f_cte = case["f_cte"].reshape(bs * self.n_objects * case["T"], -1)
+                f_mu_cte, f_logvar_cte = self.linear_f_cte_post(f_cte).reshape(bs, self.n_objects, case["T"], -1).chunk(2, -1)
+                f_cte_post = Normal(f_mu_cte, F.softplus(f_logvar_cte))
+                # f_cte_post = Normal(f_mu_cte[:, :, 0:1], F.softplus(f_logvar_cte[:, :, 0:1])) # TODO: KL in only 1 timestep
+                f_cte = f_cte_post.rsample().reshape(bs * self.n_objects * case["T"], -1)
 
             # Register statistics
             returned_post.append(f_cte_post)
@@ -226,30 +277,11 @@ class RecKoopmanModel(BaseModel):
         output["A"] = A
         output["B"] = B
         output["u"] = u.reshape(bs * self.n_objects, -1, u.shape[-1])
-        output["u_bern_logit"] = u_logit.reshape(bs, self.n_objects, -1, u_logit.shape[-1]) # Input distribution
-
-        # o_touple = (out_rec, out_pred, returned_g.reshape(torch.Size([bs * self.n_objects, -1]) + returned_g.size()[-1:]))
-        # o = [item.reshape(torch.Size([bs * self.n_objects, -1]) + item.size()[1:]) for item in o_touple]
 
         # Option 1: one object mapped to 0
         # shape_o0 = o[0].shape
         # o[0] = o[0].reshape(bs, self.n_objects, *o[0].shape[1:])
         # o[0][:,0] = o[0][:,0]*0
         # o[0] = o[0].reshape(*shape_o0)
-
-        # Sum across objects. Note: Add Clamp or Sigmoid.
-        # o[:2] = [torch.clamp(torch.sum(item.reshape(bs, self.n_objects, *item.shape[1:]), dim=1), min=0, max=1) for item in o[:2]]
-
-        # TODO: output = {}
-        #  output['rec'] = o[0]
-        #  output['pred'] = o[1]
-
-        # o.append(returned_post)
-        # o.append(A) # State transition matrix
-        # o.append(B) # Input matrix
-        # o.append(u.reshape(bs * self.n_objects, -1, u.shape[-1])) # Inputs
-        # o.append(u_logit.reshape(bs, self.n_objects, -1, u_logit.shape[-1])) # Input distribution
-        # o.append(g_for_koop.reshape(bs * self.n_objects, -1, g_for_koop.shape[-1])) # Observation propagated only with A
-        # o.append(fit_err) # Fit error g to G_for_pred
 
         return output

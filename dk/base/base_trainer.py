@@ -3,6 +3,8 @@ from abc import abstractmethod
 from numpy import inf
 from logger import TensorboardWriter
 import subprocess
+# import os
+# os.environ["CUDA_VISIBLE_DEVICES"] ="0,1,3"
 
 class BaseTrainer:
     """
@@ -46,7 +48,10 @@ class BaseTrainer:
         self.writer = TensorboardWriter(config.log_dir, self.logger, cfg_trainer['tensorboard'])
 
         if config.config.resume is not None:
-            self._resume_checkpoint(config.config.resume)
+            if config.config.resume_modules is None:
+                self._resume_checkpoint(config.config.resume)
+            else:
+                self._resume_checkpoint(config.config.resume, config.config.resume_modules, config.config.train_submodules)
 
     @abstractmethod
     def _train_epoch(self, epoch):
@@ -106,6 +111,7 @@ class BaseTrainer:
         setup GPU device if available, move model into configured device
         """
         n_gpu = torch.cuda.device_count()
+        # n_gpu = 4
         if n_gpu_use > 0 and n_gpu == 0:
             self.logger.warning("Warning: There\'s no GPU available on this machine,"
                                 "training will be performed on CPU.")
@@ -119,6 +125,8 @@ class BaseTrainer:
         # Select n_gpus according to their available memory
         mem_map = _get_gpu_memory_map()
         sorted_mem_map = [k for k, v in sorted(mem_map.items(), key=lambda item: item[1])]
+        # if 2 in sorted_mem_map:
+        #     sorted_mem_map.remove(2)
         list_ids = [sorted_mem_map[idx] for idx in indices]
         # print(list_ids)
         device = torch.device('cuda:{}'.format(list_ids[0]) if n_gpu_use > 0 else 'cpu')
@@ -149,7 +157,7 @@ class BaseTrainer:
             torch.save(state, best_path)
             self.logger.info("Saving current best: model_best.pth ...")
 
-    def _resume_checkpoint(self, resume_path):
+    def _resume_checkpoint(self, resume_path, resume_modules=None, train_submodules=None):
         """
         Resume from saved checkpoints
 
@@ -158,22 +166,41 @@ class BaseTrainer:
         resume_path = str(resume_path)
         self.logger.info("Loading checkpoint: {} ...".format(resume_path))
         checkpoint = torch.load(resume_path)
-        self.start_epoch = checkpoint['epoch'] + 1
+        model_dict = checkpoint['state_dict']
         self.mnt_best = checkpoint['monitor_best']
-
         # load architecture params from checkpoint.
         if checkpoint['config']['arch'] != self.config['arch']:
             self.logger.warning("Warning: Architecture configuration given in config file is different from that of "
                                 "checkpoint. This may yield an exception while state_dict is being loaded.")
         # print(checkpoint['state_dict']['image_encoder'].keys())
-        self.model.load_state_dict(checkpoint['state_dict'])
+        if resume_modules is not None:
 
-        # load optimizer state from checkpoint only when optimizer type is not changed.
-        if checkpoint['config']['optimizer']['type'] != self.config['optimizer']['type']:
-            self.logger.warning("Warning: Optimizer type given in config file is different from that of checkpoint. "
-                                "Optimizer parameters not being resumed.")
+            pretrained_dict = {}
+            for k, v in checkpoint['state_dict'].items():
+                if k.startswith(tuple(resume_modules)) :
+                    pretrained_dict[k] = v
+                    if not k.startswith(tuple(train_submodules)):
+                        v.requires_grad = False
+            # 1. filter out unnecessary keys
+            # pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k.startswith(tuple(resume_modules))}
+
+            # 2. overwrite entries in the existing state dict
+            model_dict = self.model.state_dict()
+            model_dict.update(pretrained_dict)
+            # 3. load the new state dict
+            # model.load_state_dict(pretrained_dict)
         else:
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            self.start_epoch = checkpoint['epoch'] + 1
+            # load optimizer state from checkpoint only when optimizer type is not changed.
+            if checkpoint['config']['optimizer']['type'] != self.config['optimizer']['type']:
+                self.logger.warning("Warning: Optimizer type given in config file is different from that of checkpoint. "
+                                    "Optimizer parameters not being resumed.")
+            else:
+                self.optimizer.load_state_dict(checkpoint['optimizer'])
+
+        self.model.load_state_dict(model_dict)
+
+        # TODO: Freeze encoder, tracker, decoder. REMEMBER! DON'T FREEZE LAST FC OF THE TRACKER!
 
         self.logger.info("Checkpoint loaded. Resume training from epoch {}".format(self.start_epoch))
 

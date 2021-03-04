@@ -9,7 +9,7 @@ from functools import reduce
 
 class ImageEncoder(nn.Module):
 
-    def __init__(self, in_channels, feat_cte_dim, feat_dyn_dim, resolution, n_objects, ngf, n_layers, cte_app=False, bs=40):
+    def __init__(self, in_channels, feat_cte_dim, feat_dyn_dim, resolution, n_objects, ngf, image_size, cte_app=False, bs=40):
         super(ImageEncoder, self).__init__()
 
         self.feat_dyn_dim = feat_dyn_dim
@@ -17,38 +17,46 @@ class ImageEncoder(nn.Module):
         # self.n_objects = reduce((lambda x, y: x * y), resolution)
         self.n_objects = n_objects
 
-        self.ori_resolution = (128, 128)
+        self.ori_resolution = image_size
         self.cte_resolution = (32, 32)
 
         last_hidden_dim = 96
 
-        self.cnn_attn = nn.Sequential(
-            nn.Conv2d(in_channels + 4, 16, 4, 2, 1), # 64, 64
-            nn.CELU(), # use ReLU
-            nn.BatchNorm2d(16), # not use batchnorm
-            nn.Conv2d(16, 32, 3, 1, 1),
-            nn.CELU(),
-            nn.BatchNorm2d(32),
-            nn.Conv2d(32, 64, 4, 2, 1), # 32, 32
-            nn.CELU(),
-            nn.BatchNorm2d(64),
-            nn.Conv2d(64, 64, 3, 1, 1),
-            nn.CELU(),
-            nn.BatchNorm2d(64),
-            nn.Conv2d(64, 128, 4, 2, 1), # 16, 16
-            nn.CELU(),
-            nn.BatchNorm2d(128),
-            nn.Conv2d(128, 128, 3, 1, 1),
-            nn.CELU(),
-            nn.BatchNorm2d(128),
-            nn.Conv2d(128, 128, 4, 2, 1), # 8, 8
-            nn.CELU(),
-            nn.BatchNorm2d(128),
-            nn.Conv2d(128, 256, 3, 1, 1),
-            nn.CELU(),
-            nn.BatchNorm2d(256), # TODO: Bias to False.
-            nn.Conv2d(256, last_hidden_dim, 1), # 16, 16 # size at input of tracker. Try different
-        )
+        layers = [nn.Conv2d(in_channels + 4, 16, 4, 2, 1), # 64, 64
+                  nn.CELU(), # use ReLU
+                  nn.BatchNorm2d(16), # not use batchnorm
+                  nn.Conv2d(16, 32, 3, 1, 1),
+                  nn.CELU(),
+                  nn.BatchNorm2d(32),
+                  nn.Conv2d(32, 64, 4, 2, 1), # 32, 32
+                  nn.CELU(),
+                  nn.BatchNorm2d(64),
+                  nn.Conv2d(64, 64, 3, 1, 1),
+                  nn.CELU(),
+                  nn.BatchNorm2d(64),
+                  nn.Conv2d(64, 128, 4, 2, 1), # 16, 16
+                  nn.CELU(),
+                  nn.BatchNorm2d(128),
+                  nn.Conv2d(128, 128, 3, 1, 1),
+                  nn.CELU(),
+                  nn.BatchNorm2d(128)]
+
+        if image_size[0] == 128:
+            layers.extend([nn.Conv2d(128, 128, 4, 2, 1), # 8, 8
+                            nn.CELU(),
+                            nn.BatchNorm2d(128),
+                            nn.Conv2d(128, 256, 3, 1, 1),
+                            nn.CELU(),
+                            nn.BatchNorm2d(256), # TODO: Bias to False.
+                            nn.Conv2d(256, last_hidden_dim, 1)])
+        elif image_size[0] == 64:
+            layers.extend([nn.Conv2d(128, 256, 3, 1, 1),
+                           nn.CELU(),
+                           nn.BatchNorm2d(256), # TODO: Bias to False.
+                           nn.Conv2d(256, last_hidden_dim, 1)])
+        else:
+            raise NotImplementedError
+        self.cnn_attn = nn.Sequential(*layers)
         # SPACE: lateral encoder
 
         '''Tracker params'''

@@ -32,6 +32,21 @@ def inf_loop(data_loader):
     for loader in repeat(data_loader):
         yield from loader
 
+def print_var_shape(var, var_name, q=False):
+    if isinstance(var, list):
+        for v in var:
+            if v is None:
+                print(var_name + ': None')
+            else:
+                print(var_name + ": {}".format(v.shape))
+    else:
+        if var is None:
+            print('None')
+        else:
+            print(var_name + ": {}".format(var.shape))
+    if q:
+        exit()
+
 def plot_representation(repr, instance=0):  # TODO: does this function belong here? Maybe log
     assert len(repr.shape) == 3
     repr = repr.detach().numpy()

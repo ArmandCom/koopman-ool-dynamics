@@ -52,8 +52,6 @@ class NTM(nn.Module):
         self.dim_h_o = dims['tracker_state']
         # self.fcn = nn.Sequential(nn.Linear(self.dim_h_o, self.dim_h_o),
         #                            nn.ReLU(),
-        #                            nn.Linear(self.dim_h_o, self.dim_h_o),
-        #                            nn.ReLU(),
         #                            nn.Linear(self.dim_h_o, dim_y)
         #                          ) # TODO: Check adding nn.Batchnorm1d()
         self.fcn = nn.Linear(self.dim_h_o, dim_y)
@@ -228,8 +226,8 @@ class NTMCell(nn.Module):
         k = self.linear_k(h_o_prev) # N * C2_2
 
         if k.shape[0] != C.shape[0]:
-            k = k.repeat_interleave(k.shape[0]//C.shape[0], dim=0)
             print(k.shape, C.shape)
+            k = k.repeat_interleave(C.shape[0]//k.shape[0], dim=0)
         k_expand = k.unsqueeze(1).expand_as(C) # N * C2_1 * C2_2
         # Key strength, which equals to beta_pre.exp().log1p() + 1 but avoids 'inf' caused by exp()
         beta_pre = self.linear_b(h_o_prev)

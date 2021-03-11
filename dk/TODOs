@@ -5,4 +5,8 @@ General TODOs
 1. Increase complexity of U encoder (Not embedding)
 2. Use modified spectralnorm from Sandesh to impose smoothness in mapping and inv_mapping.
 3. In test mode we should impose always the same annealing mode for collisions.
-4. Spectral Norm in all networks.
+4. Spectral Norm in all networks. --> Doesn't work well
+5. Recover full state instead of last coordinate.
+6. Pred-only confidence value.
+
+7. Check if validation is a different loader!!!

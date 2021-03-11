@@ -8,9 +8,9 @@ import cv2
 
 def make_dataset(root, is_train):
     if is_train:
-        folder = 'balls_n2_t60_ex50000_m'
+        folder = 'balls_n4_t60_ex50000_m'
     else:
-        folder = 'balls_n2_t60_ex2000_m'
+        folder = 'balls_n4_t60_ex2000_m'
     dataset = np.load(os.path.join(root, folder, 'dataset_info.npy'))
     return dataset
 
@@ -29,6 +29,8 @@ class BouncingBallsDataset(data.Dataset):
         self.scale = [self.size[0] / 800, self.size[1] / 800]
         self.radius = int(60 * max(self.scale)) # Note: previously 60 *
 
+        sam_rate = 2
+        self.sam_rate = int(sam_rate)
         self.root = root
         self.is_train = train
         self.n_frames_input = n_frames_input
@@ -39,9 +41,9 @@ class BouncingBallsDataset(data.Dataset):
         self.colors = [(10, 255, 0),
                        (255, 10, 0),
                        (0, 0, 255),
-                       (255, 0, 255),
-                       (255, 255, 0),
-                       (0, 255, 255),
+                       (255, 50, 255),
+                       (255, 255, 50),
+                       (50, 255, 255),
                        (153, 255, 153)]
         assert len(self.colors) >= num_objects
         assert num_objects == self.dataset.shape[-2]
@@ -67,7 +69,7 @@ class BouncingBallsDataset(data.Dataset):
         traj = self.dataset[idx]
         vid_len, n_balls = traj.shape[:2]
         if self.is_train:
-            start = random.randint(0, vid_len - self.n_frames)
+            start = random.randint(0, vid_len - self.sam_rate*self.n_frames)
         else:
             start = 0
 
@@ -78,7 +80,7 @@ class BouncingBallsDataset(data.Dataset):
             xy = []
             for color, bid in zip(self.colors[:n_balls], range(n_balls)):
                 # each ball:
-                ball = traj[start + fid, bid]
+                ball = traj[start + fid*self.sam_rate, bid]
                 x, y = int(round(self.scale[0] * ball[0])), int(round(self.scale[1] * ball[1]))
                 images[fid] = cv2.circle(images[fid], (x, y), int(self.radius * ball[3]),
                                color, -1)

@@ -7,11 +7,8 @@ from utils.util import linear_annealing
 def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
     # assert len(output) == 3 or len(output) == 5
 
-    # TODO: implement KL-div with Pytorch lib
-    #  passar distribucio i sample. Distribucio es calcula abans. Use rsample, no te lies.
-    #  G**2 es el numero de slots. Seria com el numero de timesteps, suposo. Hauria de deixar el batch i prou.
-
-    rec = output["rec"]
+    # TODO: REC COM F-1(F(F-1(F(S)))
+    rec_ori = output["rec_ori"]
     pred = output["pred"]
 
     g = output["obs_rec_pred"]
@@ -20,17 +17,21 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
     B = output["B"]
 
     # Get bs, T, n_obj; and take order into account.
-    bs = rec.shape[0]
-    T = rec.shape[1]
-    device = rec.device
+    bs = rec_ori.shape[0]
+    T = rec_ori.shape[1]
+    device = rec_ori.device
     std_rec = .15
 
     # local_geo_loss = torch.zeros(1)
+    # Note: Let's see how it does with missing data
+    # for k in ["rec", "pred", "pred_roll", "rec_ori"]:
+    #     if output[k] is not None:
+    #         output[k] = crop_top_left_keepdim(output[k], 96, None)
 
     lambd_fit_error = 0.0
     lambd_hrank = 0.0
     lambd_rec = 1
-    lambd_pred = 0.7
+    lambd_pred = 0.0
     prior_pres_prob = 0
     prior_g_mask_prob = 0.0
     lambd_u = 0.0
@@ -39,29 +40,36 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
     lambd_u_rec = 0.0
     prior_coll_prob = 0.0
     lambd_sel = 0.0
-    # lambd_u = linear_annealing(rec.device, epoch_iter[1], start_step=1000, end_step=10000, start_value=0.1, end_value=10)
-    # lambd_u_rec = linear_annealing(rec.device, epoch_iter[1], start_step=4000, end_step=40000, start_value=0, end_value=50)
-    lambd_AE = linear_annealing(rec.device, epoch_iter[1], start_step=1000, end_step=10000, start_value=0.5, end_value=40)
-    # lambd_hrank = linear_annealing(rec.device, epoch_iter[1], start_step=5000, end_step=10000, start_value=1, end_value=10)
-
+    lambd_local_geo = 0.0
     # prior_pres_prob = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=40000, start_value=0.4, end_value=0.2)
     # prior_coll_prob = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=40000, start_value=0.1, end_value=0.01)
-    # lambd_fit_error = linear_annealing(rec.device, epoch_iter[1], start_step=2000, end_step=10000, start_value=0, end_value=5)
-    # lambd_pred = linear_annealing(rec.device, epoch_iter[1], start_step=10000, end_step=16000, start_value=0, end_value=1)
-    lambd_pred = linear_annealing(rec.device, epoch_iter[1], start_step=0, end_step=6000, start_value=0.0, end_value=1)
+    # lambd_u_rec = linear_annealing(rec.device, epoch_iter[1], start_step=4000, end_step=40000, start_value=0, end_value=50)
+    lambd_hrank = linear_annealing(device, epoch_iter[1], start_step=5000, end_step=10000, start_value=1, end_value=10)
 
+    # Note: Mov mnist
+    #TODO: Limit lambd_AE and fit error for missing case. And L1 instead of L2
+    lambd_AE = linear_annealing(device, epoch_iter[1], start_step=4000, end_step=15000, start_value=0.1, end_value=10)
+    lambd_fit_error = linear_annealing(device, epoch_iter[1], start_step=10000, end_step=20000, start_value=0.1, end_value=5)
+    lambd_pred = linear_annealing(device, epoch_iter[1], start_step=4000, end_step=10000, start_value=0.2, end_value=1.3)
+    # lambd_local_geo = linear_annealing(device, epoch_iter[1], start_step=2000, end_step=10000, start_value=1, end_value=10)
+    lambd_u = linear_annealing(device, epoch_iter[1], start_step=4000, end_step=10000, start_value=0, end_value=10)
 
     # Note: Bouncing balls
-    # lambd_AE = linear_annealing(rec.device, epoch_iter[1], start_step=10000, end_step=15000, start_value=1, end_value=30)
-    # lambd_pred = linear_annealing(rec.device, epoch_iter[1], start_step=10000, end_step=15000, start_value=0, end_value=1)
-    # lambd_sel = linear_annealing(rec.device, epoch_iter[1], start_step=1000, end_step=10000, start_value=0, end_value=10)
+    # lambd_AE = linear_annealing(device, epoch_iter[1], start_step=15000, end_step=20000, start_value=0, end_value=30)
+    # lambd_local_geo = linear_annealing(device, epoch_iter[1], start_step=15000, end_step=20000, start_value=0, end_value=20)
+    # lambd_pred = linear_annealing(device, epoch_iter[1], start_step=15000, end_step=20000, start_value=0.1, end_value=1)
+    # lambd_u = linear_annealing(device, epoch_iter[1], start_step=4000, end_step=10000, start_value=0, end_value=10)
+    # lambd_sel = linear_annealing(device, epoch_iter[1], start_step=10000, end_step=10000, start_value=0, end_value=10)
 
     '''Rec and pred losses'''
     # Shape latent: [bs, T-n_timesteps+1, 1, 64, 64]
 
-    rec_distr = Normal(rec, std_rec)
-    logprob_rec = rec_distr.log_prob(target[:, -rec.shape[1]:]) \
-        .flatten(start_dim=1).sum(1)
+    logprob_rec = 0.0
+    if output["rec"] is not None:
+        rec = output["rec"]
+        rec_distr = Normal(rec, std_rec)
+        logprob_rec = rec_distr.log_prob(target[:, -rec.shape[1]:]) \
+            .flatten(start_dim=1).sum(1)
 
     logprob_pred = 0.0
     # n_preds = 5
@@ -77,11 +85,11 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
         logprob_rec_ori = rec_ori_distr.log_prob(target[:, -rec_ori.shape[1]:]) \
             .flatten(start_dim=1).sum(1)
 
-    logprob_pred_rev = 0.0
-    if output["pred_rev"] is not None:
-        pred_rev = output["pred_rev"]
-        pred_rev_distr = Normal(pred_rev, std_rec)
-        logprob_pred_rev = pred_rev_distr.log_prob(target[:, -pred.shape[1]:]) \
+    logprob_pred_roll = 0.0
+    if output["pred_roll"] is not None:
+        pred_roll = output["pred_roll"]
+        pred_roll_distr = Normal(pred_roll, std_rec)
+        logprob_pred_roll = pred_roll_distr.log_prob(target[:, -pred_roll.shape[1]:]) \
             .flatten(start_dim=1).sum(1)
 
     kl_bern_loss = 0.0
@@ -116,7 +124,7 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
         u: [bs, T, feat_dim]
         '''
         u = output["u"]
-        up_bound = 0.4
+        up_bound = 0.2
         N_elem = u.shape[0]
         l1_u_sparse = F.relu(l1_loss(u, torch.zeros_like(u)).mean() - up_bound)
         # l1_u_diff_sparse = F.relu(l1_loss(u[:, :-1] - u[:, 1:], torch.zeros_like(u[:, 1:])).mean() - up_bound) * u.shape[0] * u.shape[1]
@@ -126,27 +134,27 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
         l1_u = torch.tensor(0.0).to(device)
 
     '''Gaussian vectors KL div loss'''
-    posteriors = posteriors[:-1] # If only rec
+    posteriors = posteriors[:1] # If only rec
     prior = Normal(torch.zeros(1).to(device), torch.ones(1).to(device))
     kl_loss = torch.stack([kl_divergence(post, prior).flatten(start_dim=1).sum(1) for post in posteriors]).sum(0)
 
     nelbo = (kl_loss
              + kl_bern_loss
-             # - logprob_rec_ori * lambd_rec
+             - logprob_rec_ori * lambd_rec
              - logprob_rec * lambd_rec
              - logprob_pred     * lambd_pred
-             # - logprob_pred_rev * lambd_pred
+             - logprob_pred_roll * lambd_pred
              ).mean()
 
     AE_error = torch.tensor(0.0).to(device)
     if output["dyn_features"] is not None and lambd_AE != 0:
         dyn_feat = output["dyn_features"]
         rec_f_dyn = dyn_feat["rec"]
+        pred_roll_f_dyn = dyn_feat["pred_roll"]
         pred_f_dyn = dyn_feat["pred"]
-        pred_f_dyn_1step = output["s_pred_1step"]
 
-        T_pred_feat, _ = pred_f_dyn .shape[-2], pred_f_dyn .shape[-1]
-        T_rec_feat, _ = rec_f_dyn .shape[-2], rec_f_dyn .shape[-1]
+        T_pred_feat, _ = pred_roll_f_dyn .shape[1], pred_roll_f_dyn .shape[-1]
+        # T_rec_feat, _ = rec_f_dyn .shape[-2], rec_f_dyn .shape[-1]
 
         # With reconstruction from original.
         ori_f_dyn = dyn_feat["rec_ori"]
@@ -159,9 +167,13 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
         # T_pred_rev_feat, _ = pred_rev_f_dyn .shape[-2], pred_rev_f_dyn .shape[-1]
         # AE_error = AE_error + lambd_AE * mse_loss(ori_f_dyn[:, -T_pred_rev_feat:], pred_rev_f_dyn).sum()
 
-        AE_error = AE_error + lambd_AE * mse_loss(rec_f_dyn[:, -T_pred_feat:], pred_f_dyn).sum()
-        AE_error = AE_error + lambd_AE * mse_loss(rec_f_dyn[:, 1:], pred_f_dyn_1step[:, :-1]).sum()
+        weight = (torch.arange(pred_roll_f_dyn.shape[1])[None, :, None]*2 / pred_roll_f_dyn.shape[1]).float().to(device)
 
+        AE_error = AE_error + lambd_AE * l1_loss(ori_f_dyn[:, -(pred_f_dyn.shape[1]-1):], pred_f_dyn[:, :-1]).sum()
+        AE_error = AE_error + lambd_AE * l1_loss(ori_f_dyn[:, -(pred_roll_f_dyn.shape[1]):], pred_roll_f_dyn).sum() #*weight
+        AE_error = AE_error + lambd_AE * l1_loss(ori_f_dyn[:, -(rec_f_dyn.shape[1]):], rec_f_dyn).sum()
+
+        AE_error = torch.clamp(AE_error, max=10000)
         # TODO: add real autoencoding (input state to output state)
 
         # AE_distr = Normal(pred_f_dyn, 0.01)
@@ -173,22 +185,26 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
     fit_error = torch.tensor(0.0).to(device)
     if lambd_fit_error != 0:
         g_rec, g_pred = g[:, :T], g[:, T:]
-        # T_min = min(T, g_pred.shape[1])
+        T_min = min(T, g_pred.shape[1])
 
         # Option 1: Long term
         # fit_error = fit_error + lambd_fit_error * mse_loss(g_rec[:, -T_min:], g_pred[:, -T_min:]).sum()
 
         # Option 2: Short term
         g_pred_1step = output['g_pred_1step']
-        # g_pred_3step = output['g_pred_3step']
-        fit_error = fit_error + lambd_fit_error * mse_loss(g_pred_1step[:, :-1], g_rec[:, 1:]).sum()
-        # fit_error = fit_error + (lambd_fit_error/2) * l1_loss(g_pred_3step[:, :-3], g_rec[:, 3:]).sum()
+        fit_error = fit_error + lambd_fit_error * mse_loss(g_pred_1step[:, :-1], g_rec[:, -(g_pred_1step.shape[1]-1):]).sum()
+
+        g_pred_2step = output['g_pred_2step']
+        fit_error = fit_error + lambd_fit_error * mse_loss(g_pred_2step[:, :-2], g_rec[:, -(g_pred_1step.shape[1]-2):]).sum()
 
     mse_u_loss = torch.tensor(0.0).to(device)
     if output["u_rec"] is not None and output["u"] is not None and lambd_u_rec!=0:
         u_rec, u = output["u_rec"], output["u"]
         mse_u_loss = mse_u_loss + lambd_u_rec *  l1_loss(u_rec[:, -u.shape[1]:], u).sum()
 
+    local_geo_loss = torch.tensor(0.0).to(device)
+    if lambd_local_geo!=0:
+        local_geo_loss = local_geo_loss + lambd_local_geo *  local_geo(g[:, :T], dyn_feat["rec_ori"], rec_ori)
     '''Low rank G'''
     # Option 1:
     # T = g_for_koop.shape[1]
@@ -201,6 +217,7 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
     # for t in range(T-1-n_timesteps):
     #     logdet_H = torch.slogdet(g_for_koop[..., t:t+n_timesteps, :] + reg_mask)
     #     h_rank_loss = h_rank_loss + .01*(logdet_H[1]).mean()
+
     # Option 2:
     h_rank_loss = torch.tensor(0.0).to(device)
     if lambd_hrank != 0:
@@ -234,14 +251,15 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
     '''Total Loss'''
     loss = (  nelbo
               # + h_rank_loss
-              # + l1_u
+              + l1_u
+              # + local_geo_loss
               + fit_error
               + AE_error
               # + mse_u_loss
-              )/bs
+              )
 
 
-    rec_mse = mse_loss(rec, target[:, -rec.shape[1]:]).mean(1).reshape(bs, -1).flatten(start_dim=1).sum(1).mean()
+    rec_mse = mse_loss(rec_ori, target[:, -rec_ori.shape[1]:]).mean(1).reshape(bs, -1).flatten(start_dim=1).sum(1).mean()
     pred_mse = mse_loss(pred, target[:, -pred.shape[1]:]).mean(1).reshape(bs, -1).flatten(start_dim=1).sum(1).mean()
 
     dict_out = {
@@ -255,8 +273,8 @@ def embedding_loss(output, target, epoch_iter, n_epochs_start=0, lambd=0.3):
         'Fit error':fit_error,
         'AE error':AE_error,
         # 'G Pred Loss':fit_error,d
-        # 'Local geo Loss':local_geo_loss,
-        # 'mse_u':mse_u_loss,
+        'Local geo Loss':local_geo_loss,
+        # 'l1_u':l1_u,
     }
 
     return loss, dict_out
@@ -270,19 +288,22 @@ def mse_loss(output, target, reduction='none'):
 def l1_loss(output, target, reduction='none'):
     return F.l1_loss(output, target, reduction=reduction)
 
-# def local_geo(g, states, scaling_factor = 10):
-#     bs, T = states.shape[:2]
-#     permu = np.random.permutation(bs * (T))
-#     split_0 = permu[:bs * (T) // 2]
-#     split_1 = permu[bs * (T) // 2: 2*(bs * (T) // 2)]
-#
-#     g = g.reshape(bs*T, 1, -1) # dim 1 stands for N_obj
-#     states = states.reshape(bs*T, 1, -1)
-#
-#     dist_g = torch.mean((g[split_0] - g[split_1]) ** 2, dim=(1, 2))
-#     dist_s = torch.mean((states[split_0] - states[split_1]) ** 2, dim=(1, 2))
-#
-#     return torch.abs(dist_g * scaling_factor - dist_s).mean()
+def local_geo(g, states, vid, scaling_factor = 0.1):
+    bsO, T = states.shape[:2]
+    permu = np.random.permutation(bsO * (T))
+    split_0 = permu[:bsO * (T) // 2]
+    split_1 = permu[bsO * (T) // 2: 2*(bsO * (T) // 2)]
+
+    g = g.reshape(bsO*T, 1, -1) # dim 1 stands for N_obj
+    states = states.reshape(bsO*T, 1, -1)
+
+    O = bsO//vid.shape[0]
+    vid = vid.repeat_interleave(O, dim=0).reshape(bsO*T, 1, -1)
+
+    dist_g = torch.sum((g[split_0] - g[split_1]) ** 2, dim=-1)
+    dist_s = torch.sum((states[split_0] - states[split_1]) ** 2, dim=-1)
+    dist_vid = torch.sum((vid[split_0] - vid[split_1]) ** 2, dim=-1)
+    return torch.abs(dist_g * scaling_factor - dist_s).sum() + torch.abs(dist_s * scaling_factor - dist_vid * 2).sum()
 
 def diagonal_loss(M):
     assert M.shape[-1] == M.shape[-2]
@@ -333,3 +354,10 @@ def kl_divergence_bern_bern(z_pres_logits, prior_pres_prob, eps=1e-15):
          (1 - z_pres_probs) * (torch.log(1 - z_pres_probs + eps) - torch.log(1 - prior_pres_prob + eps))
 
     return kl
+
+def crop_top_left_keepdim(img, cropx, cropy):
+    y, x = img.shape[-2:]
+    mask = torch.ones_like(img)
+    # mask[..., :, :(x - cropx)] = 0
+    mask[..., :(y - cropx), :] = 0
+    return img * mask

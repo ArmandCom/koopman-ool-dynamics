@@ -44,7 +44,6 @@ class MovingMNISTLoader(BaseDataLoader):
     """
     def __init__(self, dataset_name, seq_length, seq_stride, n_objects, data_dir, batch_size, shuffle=True, training_split=0.9, validation_split=0.0, dataset_reduction=0, num_workers=1, training=True):
 
-
         total_batch_size = batch_size * n_objects #This is a patchy way of doing it
         self.data_dir = data_dir
         self.name = dataset_name
@@ -52,7 +51,7 @@ class MovingMNISTLoader(BaseDataLoader):
         self.dataset = MovingMNISTDataset(data_dir, training, seq_length,
                                    0, 1, training_split, transform) #TODO: we set num_obj to 1 for all cases, to merge them in the patchy way
 
-        super().__init__(self.dataset, total_batch_size, shuffle, n_objects, validation_split, dataset_reduction, num_workers)
+        super().__init__(self.dataset, total_batch_size, shuffle, n_objects, validation_split, dataset_reduction, num_workers, training=training)
 
 class BouncingBallsLoader(BaseDataLoader):
     """
@@ -67,7 +66,7 @@ class BouncingBallsLoader(BaseDataLoader):
         transform = transforms.Compose([ToTensor()]) #Scale()
         self.dataset = BouncingBallsDataset(data_dir, training, seq_length,
                                           0, n_objects, image_size, training_split, transform)
-        super().__init__(self.dataset, total_batch_size, shuffle, 1, validation_split, dataset_reduction, num_workers)
+        super().__init__(self.dataset, total_batch_size, shuffle, 1, validation_split, dataset_reduction, num_workers, training=training)
 
 # elif opt.dset_name == 'bouncing_balls':
 # transform = transforms.Compose([vtransforms.Scale(opt.image_size),

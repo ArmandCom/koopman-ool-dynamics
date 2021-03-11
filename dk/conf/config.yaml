@@ -3,7 +3,7 @@ defaults:
 #  - dataset: boun_balls
 #  - dataset: dsprites
 
-#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_pred/Koopman_Disentanglement/models/checkpoint-epoch2.pth'
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_circ_miss/Koopman_Disentanglement/models/checkpoint-epoch1.pth'
 #resume_modules: ['linear_f_cte_post', 'linear_f_dyn_post', 'image_decoder', 'image_encoder', 'koopman'] #divide into resume/freeze/skiptrain/skipfreeze
 #train_submodules: ['image_encoder.tracker.ntm.fcn', 'koopman']
 

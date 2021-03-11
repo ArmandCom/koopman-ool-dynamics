@@ -9,6 +9,7 @@ from parse_config import ConfigParser
 import hydra
 from omegaconf import DictConfig
 
+from utils import overlap_objects_from_batch
 
 # TODO: Full test function has to be modified according to the new changes.
 @hydra.main(config_path="conf/config.yaml")
@@ -18,15 +19,18 @@ def main(cfg_dict : DictConfig):
     logger = config.get_logger('test')
 
     # setup data_loader instances
-    data_loader = getattr(module_data, config['data_loader']['type'])(
-        config['data_loader']['args']['data_dir'],
-        batch_size=512,
-        shuffle=False,
-        validation_split=0.0,
-        training=False,
-        num_workers=2
-    )
-
+    # data_loader = getattr(module_data, config['data_loader']['type'])(
+    #     config['data_loader']['args']['data_dir'],
+    #     batch_size=512,
+    #     shuffle=False,
+    #     validation_split=0.0,
+    #     training=False,
+    #     num_workers=2
+    # )
+    config['data_loader']['args']['shuffle'] = False
+    config['data_loader']['args']['training'] = False
+    config['data_loader']['args']['validation_split'] = 0.0
+    data_loader = config.init_obj('data_loader', module_data)
     # build model architecture
     model = config.init_obj('arch', module_arch)
     logger.info(model)
@@ -53,17 +57,15 @@ def main(cfg_dict : DictConfig):
     with torch.no_grad():
         for i, (data, target) in enumerate(tqdm(data_loader)):
 
-            # TODO: overlap objects with overlap_objects_from_batch in util.oy
-            # TODO: check model's output is correct for the loss_fn
-
+            if config["data_loader"]["type"] == "MovingMNISTLoader":
+                data = overlap_objects_from_batch(data,config['n_objects'])
+            target = data # Is data a variable?
             data, target = data.to(device), target.to(device)
-            output = model(data)
 
-            #
-            # save sample images, or do something with output here
-            #
+            output = model(data, epoch_iter=-1)
+
             # computing loss, metrics on test set
-            loss = loss_fn(output, target)
+            loss, loss_particles = loss_fn(output, target, epoch_iter=-1, lambd=0)
             batch_size = data.shape[0]
             total_loss += loss.item() * batch_size
             for i, metric in enumerate(metric_fns):

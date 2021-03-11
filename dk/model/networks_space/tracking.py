@@ -87,7 +87,7 @@ class NTM(nn.Module):
 
         # Sort h_o_prev and y_e_prev
         # Note: REP
-        # delta = torch.arange(0, self.n_objects).float().cuda().unsqueeze(0) * 0.0001 # 1 * O
+        # delta = torch.arange(0, self.n_objects).float().to(h_o_prev.device).unsqueeze(0) * 0.0001 # 1 * O
         # y_e_prev_mdf = y_e_prev.squeeze(2).round() - delta
         # perm_mat = self.permutation_matrix_calculator(y_e_prev_mdf) # N * O * O
         # h_o_prev = perm_mat.bmm(h_o_prev) # N * O * dim_h_o
@@ -198,6 +198,12 @@ class NTMCell(nn.Module):
         self.cosine_similarity = nn.CosineSimilarity(dim=2) # Check dimension
         self.softmax = nn.Softmax(dim=1)
         self.rnn_cell = nn.GRUCell(feat_dim, dim_h_o)
+        for m in self.modules():
+            if isinstance(m, nn.GRUCell):
+                nn.init.xavier_normal_(m.weight_ih)
+                nn.init.xavier_normal_(m.weight_hh)
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
         # self.ha = int(round(np.sqrt(feat_dim*H/W)))
         # self.wa = int(round(np.sqrt(feat_dim*W/H)))
         # self.att = torch.Tensor(n_objects, self.ha, self.wa)#.cuda()

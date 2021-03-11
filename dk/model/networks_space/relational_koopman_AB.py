@@ -15,14 +15,6 @@ def gaussian_init_(n_units, std=1):
     Omega = sampler.sample((n_units, n_units))[..., 0]
     return Omega
 
-# def gaussian_init_2dim(units, std=1):
-#     assert len(units) == 2
-#     sampler = torch.distributions.Normal(torch.Tensor([0]), torch.Tensor([std/units[0]]))
-#     Omega = sampler.sample((units[0], units[1]))[..., 0]
-#     return Omega
-
-# TODO: Decide if OLS (flexible with num obj). Same A for all?
-
 def get_u_states_mask(states, collision_margin, n_timesteps):
     B, N, sd = states.shape
     # Assuming poses are in the first and second position.
@@ -48,9 +40,10 @@ def get_rel_states_mask(rel_states, collision_margin, n_timesteps):
 '''My definition'''
 
 class Embedding(nn.Module):
-    def __init__(self, s, hidden_size, g, SN=False):
+    def __init__(self, s, c, hidden_size, g, SN=False):
         super(Embedding, self).__init__()
-
+        self.g = g
+        self.c = c
         self.model = nn.Sequential(
             nn.Linear(s, hidden_size),
             nn.ReLU(),
@@ -58,20 +51,14 @@ class Embedding(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, g + 1),
+            nn.Linear(hidden_size, (g * c) + 1),
         )
-        # self.model = nn.Sequential(
-        #     SpectralNorm(nn.Linear(s, hidden_size)),
-        #     nn.ReLU(),
-        #     SpectralNorm(nn.Linear(hidden_size, g + 1)),
-        # )
-        # for m in self.modules():
-        #     if isinstance(m, nn.Linear):
-        #         nn.init.xavier_normal_(m.weight)
-        #         if m.bias is not None:
-        #             nn.init.constant_(m.bias, 0.0)
-        if SN:
-            self.model = SpectralNorm(self.model)
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
 
 
     def forward(self, x):
@@ -81,107 +68,100 @@ class Embedding(nn.Module):
         Returns:
             [n_particles, output_size]
         """
+        # x = torch.clamp(x, min=-1.1, max=1.1)
         o = self.model(x)
-        obs_sel, obs = o[..., :1], o[..., 1:]
-        return obs, obs_sel
+        g_sel_logit = o[..., :1]
+        g_out = o[..., 1:].reshape(-1, self.c, self.g)
+        return g_out, g_sel_logit
 
 class U_Embedding(nn.Module):
-    def __init__(self, input_size, u_size, hidden_size, output_size, SN=False):
+    def __init__(self, s, c, hidden_size, output_size, collision_margin=None, SN=False):
         super(U_Embedding, self).__init__()
-
-        self.input_size = input_size
-        self.u_size = u_size
-        self.hidden_size = hidden_size
+        self.collision_margin = collision_margin
         self.output_size = output_size
-
+        self.c = c
+        self.u_dim = output_size
+        self.sigmoid = nn.Sigmoid()
+        self.gumbel_sigmoid = tut.STGumbelSigmoid()
+        # Input is s_o1 - s_o2
+        # if collision_margin is None:
         self.model_u = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
+            nn.Linear(s, hidden_size // 2),
             nn.ReLU(),
-            nn.Linear(hidden_size, input_size +1),
-        )
-        # self.model_u = nn.Sequential(
-        #     nn.Linear(input_size, u_size +1),
-        # )
-        self.model = nn.Sequential(
-            nn.Linear(input_size, hidden_size), #  + u_size
-            nn.ReLU(),
-            nn.Linear(hidden_size, output_size),
+            nn.Linear(hidden_size // 2, output_size)
         )
 
-        # self.model_u = nn.Sequential(
-        #     SpectralNorm(nn.Linear(input_size, hidden_size // 2)),
-        #     nn.ReLU(),
-        #     SpectralNorm(nn.Linear(hidden_size // 2, hidden_size // 2)),
-        #     nn.ReLU(),
-        #     SpectralNorm(nn.Linear(hidden_size // 2, u_size +1)),
-        # )
-        # self.model = nn.Sequential(
-        #     SpectralNorm(nn.Linear(input_size + u_size, hidden_size)),
-        #     nn.ReLU(),
-        #     SpectralNorm(nn.Linear(hidden_size, hidden_size)),
-        #     nn.ReLU(),
-        #     SpectralNorm(nn.Linear(hidden_size, output_size)),
-        # )
+        self.model = nn.Sequential(
+            nn.Linear(s, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size * c),
+        )
+
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
 
-        if SN:
-            self.model = SpectralNorm(self.model)
-            self.model_u = SpectralNorm(self.model_u)
-        #TODO: adopt Sandesh's SpectralNorm.
-
-
         self.round = tut.Round()
-        self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
+        self.relu = nn.ReLU()
 
     def forward(self, x, temp=1, n_timesteps = None, collision_margin=None):
         """
         Args:
-            x: [n_particles, input_size]
+            x: [n_relations, state_size] (relative states)
         Returns:
-            [n_particles, output_size]
+            [n_relations, output_size]
+            [n_relations, selector_size]
         """
-        o = self.model_u(x)
-        inputs, u_logits = o[..., :-1], o[..., -1:] # o.chunk(2, -1)
+        BT, N, sd = x.shape
+        u_logits = self.model_u(x)
+        u_enc = self.model(x)
+
         if collision_margin is None:
-            u = None
+            # u = torch.exp(u_logits)
+            u = (u_logits / temp).sigmoid()
+            # u = self.gumbel_sigmoid(u)
         else:
             u_logits = None
-            exit('No hardcoded_margin for U now')
+            print('Not now')
+            exit()
             u = get_u_states_mask(x, collision_margin, n_timesteps)
 
-        # inputs = self.relu(inputs)
-        # x = self.model(torch.cat([x, inputs], dim=-1))
+        g_u = (u_enc * u).reshape(BT, N, -1) #* u
+        g_u = g_u.reshape(-1, self.c, self.u_dim)
 
-        # TODO: Maybe we might need one forward per input when selector dim>1?
-        x = self.model(x * inputs)
-        return x, u, u_logits
+        return g_u, u, u_logits
 
 class Rel_Embedding(nn.Module):
-    def __init__(self, s, rel_size, hidden_size, output_size, collision_margin=None, SN=False):
+    def __init__(self, s, c, hidden_size, output_size, collision_margin=None, SN=False):
         super(Rel_Embedding, self).__init__()
         self.collision_margin = collision_margin
         self.output_size = output_size
+        self.c = c
+        self.g = output_size
+        self.sigmoid = nn.Sigmoid()
+        self.gumbel_sigmoid = tut.STGumbelSigmoid()
         # Input is s_o1 - s_o2
         # if collision_margin is None:
+
         self.model_rel = nn.Sequential(
             nn.Linear(3*s, hidden_size // 2),
             nn.ReLU(),
             nn.Linear(hidden_size // 2, hidden_size // 2),
             nn.ReLU(),
-            nn.Linear(hidden_size // 2, rel_size + 1),
+            nn.Linear(hidden_size // 2, 1)
         )
 
         self.model = nn.Sequential(
-            nn.Linear(s + rel_size, hidden_size),
+            nn.Linear(3*s, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, output_size),
+            nn.Linear(hidden_size, output_size * c),
         )
 
         for m in self.modules():
@@ -189,9 +169,9 @@ class Rel_Embedding(nn.Module):
                 nn.init.xavier_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
-        if SN:
-            self.model = SpectralNorm(self.model)
-            self.model_rel = SpectralNorm(self.model_u)
+        # if SN:
+        #     self.model = SpectralNorm(self.model)
+        #     self.model_rel = SpectralNorm(self.model_u)
 
         self.round = tut.Round()
         self.sigmoid = nn.Sigmoid()
@@ -205,35 +185,48 @@ class Rel_Embedding(nn.Module):
             [n_relations, output_size]
             [n_relations, selector_size]
         """
-        BT, N, sd = x.shape
-        o = self.model_rel(rel_x)
-        rel_enc = self.relu(o[..., :-1])
-        if collision_margin is None:
-            sel = None
-            sel_logits = o[..., -1:]
 
+        # TODO: There should be an interaction matrix if masses are all the same.
+        BT, N, sd = x.shape
+        sel_logits = self.model_rel(rel_x)
+        rel_enc = self.model(rel_x)
+        if collision_margin is None:
+            # sel = torch.exp(sel_logits)
+            sel = sel_logits.sigmoid()
+            sel = self.gumbel_sigmoid(sel)
         else:
             sel_logits = None
+            print('Not now')
             sel = get_rel_states_mask(rel_x.chunk(3, -1)[-1], collision_margin, n_timesteps)
 
         mask_I = (- torch.eye(N)[None, :, :, None].to(x.device) + 1.0).reshape(1, N*N, 1)
-        rel_enc = (rel_enc * mask_I).reshape(BT, N, N, -1).sum(2)
-        g = self.model(torch.cat([x, rel_enc], dim=-1))
-
-        return g, sel, sel_logits
+        g_rel = torch.sum((rel_enc * mask_I * sel).reshape(BT, N, N, -1), 2)
+        g_rel = g_rel.reshape(-1, self.c, self.g)
+        return g_rel, sel, sel_logits
 
 class ObservableDecoderNetwork(nn.Module):
-    def __init__(self, s, hidden_size, output_size, SN=False):
+    def __init__(self, s, c, hidden_size, output_size, SN=False):
         super(ObservableDecoderNetwork, self).__init__()
 
-        if not SN:
-            self.model = nn.Sequential(
-                nn.Linear(s, hidden_size),
-                nn.ReLU(),
-                nn.Linear(hidden_size, hidden_size),
-                nn.ReLU(),
-                nn.Linear(hidden_size, output_size)
-            )
+        # self.fc = SpectralNorm(nn.Linear(c, 1))
+        # self.model = nn.Sequential(
+        #     SpectralNorm(nn.Linear(s, hidden_size)),
+        #     nn.ReLU(),
+        #     SpectralNorm(nn.Linear(hidden_size, hidden_size)),
+        #     nn.ReLU(),
+        #     SpectralNorm(nn.Linear(dhidden_size, hidden_size)),
+        #     nn.ReLU(),
+        #     SpectralNorm(nn.Linear(hidden_size, output_size +1))
+        # )
+        self.model = nn.Sequential(
+            nn.Linear(s, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size + 1)
+        )
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -241,31 +234,27 @@ class ObservableDecoderNetwork(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
 
-        else:
-            self.model = nn.Sequential(
-                SpectralNorm(nn.Linear(s, hidden_size)),
-                nn.ReLU(),
-                SpectralNorm(nn.Linear(hidden_size, hidden_size)),
-                nn.ReLU(),
-                SpectralNorm(nn.Linear(hidden_size, output_size + 1))
-            )
-
     def forward(self, x):
-        B, N, T, _ = x.shape
+        B, N, T, c_d, g_d = x.shape
         """
         Args:
             x: [n_particles, input_size]
         Returns:
             [n_particles, output_size]
         """
-        o = self.model(x.reshape(B*N*T, -1)).reshape(B, N, T, -1)
-        confi = o[..., -1:]#.sigmoid()
-        out = torch.clamp(o[..., :-1], min=-1.1, max=1.1) # TODO: make sure this works well.
+        x = x.reshape(B*N*T, c_d, g_d)
+        # x = self.fc(x.transpose(-2, -1)).squeeze(-1)
+        x = x.sum(1)
 
+        o = self.model(x).reshape(B, N, T, -1)
+        confi = o[..., -1:]#.sigmoid()
+        # out = torch.clamp(o[..., :-1], min=-1.1, max=1.1)
+        # out = o[..., :-1].tanh()
+        out = o[..., :-1]
         return out, confi
 
 class EncoderNetwork(nn.Module):
-    def __init__(self, input_dim, nf_particle, nf_effect, g_dim, r_dim, u_dim, with_interactions=False, residual=False, collision_margin=None, n_timesteps=None):
+    def __init__(self, input_dim, nf_particle, nf_effect, g_dim, r_dim, u_dim, n_chan, with_interactions=False, residual=False, collision_margin=None, n_timesteps=None):
         #TODO: added r_dim
         super(EncoderNetwork, self).__init__()
 
@@ -276,27 +265,32 @@ class EncoderNetwork(nn.Module):
         self.n_timesteps = n_timesteps
 
         '''Encoder Networks'''
-        # self.u_embedding = U_Embedding(input_dim, u_size=u_dim, hidden_size=nf_effect, output_size=g_dim//2)
-        self.embedding = Embedding(input_dim, hidden_size=nf_particle, g=g_dim)
+        self.embedding = Embedding(input_dim, n_chan, hidden_size=nf_particle, g=g_dim)
+        self.u_embedding = U_Embedding(input_dim, n_chan, hidden_size=nf_effect, output_size=u_dim, collision_margin=collision_margin)
 
         if with_interactions:
-            self.rel_embedding = Rel_Embedding(input_dim, rel_size=r_dim, hidden_size=nf_effect, output_size=g_dim, collision_margin=collision_margin)
+            self.rel_embedding = Rel_Embedding(input_dim, n_chan, hidden_size=nf_effect, output_size=r_dim, collision_margin=collision_margin)
 
         # TODO: There's the Gumbel Softmax, if this wasn't working. Check the Tracking code if they do KL divergence in that case
         self.softmax = nn.Softmax(dim=-1)
         self.round = tut.Round()
         self.st_gumbel_softmax = tut.STGumbelSoftmax(-1)
 
-    def forward(self, states, temp, input=None, n_timesteps=None, collision_margin=None):
+    def forward(self, states, temp, with_u=True, inputs=None, n_timesteps=None, collision_margin=None):
 
         B, N, T, sd = states.shape
         BT = B*T
         states = states.permute(0, 2, 1, 3) # [B, T, N, sd]
         states = states.reshape(BT, N, sd) # [B * T, N, sd]
 
-        # g_u, u, u_logits = self.u_embedding(states, temp=temp, n_timesteps=self.n_timesteps, collision_margin=collision_margin)
-        u, u_logits = None, None
         g, g_sel_logits = self.embedding(states)
+        if with_u:
+            g_u, u, u_logits = self.u_embedding(states)
+        else:
+            g_u, u, u_logits = None, None, None
+
+        if inputs is not None:
+            u = inputs
 
         if self.with_interactions:
             # TODO: !!!! exchange predictions for objects. o1-o2 --> o2-o1.
@@ -316,30 +310,20 @@ class EncoderNetwork(nn.Module):
                 sel_logits = sel_logits.reshape(B, T, N, N).permute(0, 2, 1, 3).reshape(B, N, T, N)
 
             # TODO: Implement with hardcoded selectors
-            mask = torch.cat([g_sel_logits, u_logits, sel_logits], dim=-1)
+            mask = g_sel_logits
             # mask = self.round(self.softmax(mask/temp))
-            mask = self.softmax(mask)
+            # mask = self.softmax(mask)
             # tut.norm_grad(mask, 10)
-            mask = self.st_gumbel_softmax(mask)
-            obs = torch.stack([g * mask[..., 0:1],
-                             g_u * mask[..., 1:2],
-                             g_rel * mask[..., 2:3]],
-                            dim=-1)
+            # mask = self.st_gumbel_softmax(mask)
+            obs = g #+ g_u + g_rel
+
         else:
             # mask = torch.cat([g_sel_logits, u_logits], dim=-1)
             mask = g_sel_logits
             # mask = self.round(self.softmax(mask/temp))
-            mask = self.softmax(mask/temp)
-            # tut.norm_grad(mask, 10)
-            # mask_shape = mask.shape
-            # mask = self.st_gumbel_softmax(mask.flatten(start_dim=0, end_dim=-2)).reshape(*mask_shape)
-            # obs = torch.stack([g * mask[..., 0:1],
-            #                  g_u * mask[..., 1:2]],
-            #                 dim=-1)
-            # obs = torch.stack([g,
-            #                    g_u],
-            #                   dim=-1)
-            obs = g[..., None]
+            # mask = self.softmax(mask/temp)
+
+            obs = g
             sel, sel_logits = None, None
 
 
@@ -354,15 +338,20 @@ class EncoderNetwork(nn.Module):
         # TODO: We should add a network that maps noise (or ones) to something. Like gravitational constant.
         #  If we don't, we have to let know that we assume no external interaction but the objects collision to the environment.
 
+
         obs = obs.reshape(B, T, N, *obs.shape[-2:]).permute(0, 2, 1, 3, 4).reshape(B, N, T, *obs.shape[-2:])
 
-        if u is not None:
-            u   = u  .reshape(B, T, N, -1).permute(0, 2, 1, 3).reshape(B, N, T, -1)
+        if g_u is not None:
+            g_u = g_u.reshape(B, T, N, *g_u.shape[-2:]).permute(0, 2, 1, 3, 4).reshape(B, N, T, *g_u.shape[-2:])
+
+        # Note: We punish directly g_u
+        if u is not None and g_u is not None:
+            u   =  u  .reshape(B, T, N, -1).permute(0, 2, 1, 3).reshape(B, N, T, -1)
         if u_logits is not None:
             u_logits = u_logits.reshape(B, T, N, -1).permute(0, 2, 1, 3).reshape(B, N, T, -1)
 
         selector = mask.reshape(B, T, N, -1).permute(0, 2, 1, 3).reshape(B, N, T, -1)
-        return obs, (u, u_logits), (sel, sel_logits), selector
+        return obs, g_u, (u, u_logits), (sel, sel_logits), selector
 
 class dynamics(nn.Module):
     def __init__(self, g, r, u, with_interactions, init_scale):
@@ -371,25 +360,25 @@ class dynamics(nn.Module):
         # TODO: Doubts about the size. Different matrix for each interaction? We start by aggregating relation_states and using same matrix?
         # TODO: Maybe get all states and sum them with a matrix
 
-        self.dynamics = nn.Linear(g, g, bias=False)
-
         #Option 1
 
-        # self.dynamics.weight.data = torch.zeros_like(self.dynamics.weight.data) + 0.001
+        self.u_dynamics = nn.Linear(u, g, bias=False)
 
-        # for m in self.modules():
-        #     if isinstance(m, nn.Linear):
-        #         nn.init.xavier_normal_(m.weight)
-        # # eig_vec = torch.eig(self.dynamics.weight.data, eigenvectors=True)[1]
-        # # self.dynamics.weight.data = eig_vec
-        # U, S, V = torch.svd(self.dynamics.weight.data)
-        # self.dynamics.weight.data = torch.mm(U, V.t()) * 0.8
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+        # eig_vec = torch.eig(self.dynamics.weight.data, eigenvectors=True)[1]
+        # self.dynamics.weight.data = eig_vec
+        U, S, V = torch.svd(self.u_dynamics.weight.data)
+        self.u_dynamics.weight.data = torch.mm(U, V.t()) * 0.8
 
         #Option 2
+        self.dynamics = nn.Linear(g, g, bias=False)
+        self.dynamics.weight.data = torch.zeros_like(self.dynamics.weight.data) + 0.001
 
-        self.dynamics.weight.data = gaussian_init_(g, std=0.8)
-        U, S, V = torch.svd(self.dynamics.weight.data)
-        self.dynamics.weight.data = torch.mm(U, V.t()) * 0.7
+        # self.dynamics.weight.data = gaussian_init_(g, std=0.1)
+        # U, S, V = torch.svd(self.dynamics.weight.data)
+        # self.dynamics.weight.data = torch.mm(U, V.t()) * 0.7
 
         #Option 3
 
@@ -400,79 +389,10 @@ class dynamics(nn.Module):
         # TODO: Recursively keep only k singular values.
         # TODO: if OLS G = g[:-1], H= g[1:], svd(g). --> Might not be right because you have to invert G and not H
 
-    def forward(self, g):
-        # x = torch.cat([g, rel, u], dim=-1)
+    def forward(self, g, u):
         g = self.dynamics(g)
-        return g
-
-class att_dynamics(nn.Module):
-    def __init__(self, g, r, u, with_interactions, init_scale):
-        super(att_dynamics, self).__init__()
-        self.scale = g ** -0.5
-        self.eps = 1e-8
-        self.to_q = nn.Linear(g+2, g//2)
-        self.to_k = nn.Linear(g, g//2)
-        self.to_v = nn.Linear(g, g)
-
-        self.dynamics = nn.Linear(g, g, bias=False)
-        #Option 1
-
-        # self.dynamics.weight.data = torch.zeros_like(self.dynamics.weight.data) + 0.001
-
-        # for m in self.modules():
-        #     if isinstance(m, nn.Linear):
-        #         nn.init.xavier_normal_(m.weight)
-        # # eig_vec = torch.eig(self.dynamics.weight.data, eigenvectors=True)[1]
-        # # self.dynamics.weight.data = eig_vec
-        # U, S, V = torch.svd(self.dynamics.weight.data)
-        # self.dynamics.weight.data = torch.mm(U, V.t()) * 0.8
-
-        #Option 2
-
-        self.dynamics.weight.data = gaussian_init_(g, std=0.8)
-        U, S, V = torch.svd(self.dynamics.weight.data)
-        self.dynamics.weight.data = torch.mm(U, V.t()) * 0.7
-
-        #Option 3
-
-        # k = 5
-        # S = torch.ones_like(S)
-        # S[..., k:] = 0
-        # self.dynamics.weight.data = torch.matmul(torch.matmul(U, torch.diag_embed(S)), V.t()) * init_scale
-        # TODO: Recursively keep only k singular values.
-        # TODO: if OLS G = g[:-1], H= g[1:], svd(g). --> Might not be right because you have to invert G and not H
-
-    def forward(self, g):
-        B = g.shape[0]
-        g_out = self.dynamics(g)
-        print('should be equal: ', g_out[0,0], (g_out[0]*self.dynamics.weight[0]).sum())
-        exit()
-
-        g = g.reshape(B,2,-1)
-
-        # Koopman operator
-        A = self.dynamics.weight # TODO: Transpose?!!!
-
-        # Positional encoding
-        # pe = torch.arange(g.shape[-1])[:, None] / (g.shape[-1])
-        # pe_r = pe.flip(0)
-        # A = torch.cat([g, pe, pe_r], dim=-1)
-
-        pe = torch.arange(A.shape[-1])[:, None] / (A.shape[-1])
-        pe_r = pe.flip(0)
-        A = torch.cat([A, pe, pe_r], dim=-1)
-
-        # Query
-        q = self.to_q(A)[None].repeat_interleave(B, 0)
-
-        k = self.to_k(g)
-
-        dots = torch.einsum('bid,bjd->bij', k, q) * self.scale #b2g
-        attn = dots.softmax(dim=1) + self.eps
-
-        g = g*attn
-        g = self.dynamics(g)
-
+        if u is not None:
+            g = g + self.u_dynamics(u)
         return g
 
 class KoopmanOperators(nn.Module, ABC):
@@ -493,27 +413,29 @@ class KoopmanOperators(nn.Module, ABC):
             first_deriv_dim = 0
             sec_deriv_dim = 0
 
+        n_chan = 1
+
         input_dim = state_dim * (n_timesteps + first_deriv_dim + sec_deriv_dim) #+ g_dim # g_dim added for recursive sampling
 
         '''Encoder Network'''
-        self.mapping = EncoderNetwork(input_dim, nf_particle, nf_effect, g_dim, r_dim, u_dim, with_interactions=with_interactions, residual=False, collision_margin=collision_margin, n_timesteps=n_timesteps)
+        self.mapping = EncoderNetwork(input_dim, nf_particle, nf_effect, g_dim, r_dim, u_dim, n_chan, with_interactions=with_interactions, residual=False, collision_margin=collision_margin, n_timesteps=n_timesteps)
 
         '''Decoder Network'''
-        self.inv_mapping = ObservableDecoderNetwork(g_dim, hidden_size=nf_particle, output_size=state_dim, SN=False)
+        self.inv_mapping = ObservableDecoderNetwork(g_dim, n_chan, hidden_size=nf_particle, output_size=input_dim, SN=False)
 
         '''Koopman operator'''
         self.dynamics = dynamics(g_dim, r_dim, u_dim, with_interactions, init_scale)
 
-        self.simulate = self.rollout
+        self.simulate = self.rollout_B
 
     def to_s(self, gcodes, psteps):
         """ state decoder """
         states, confi = self.inv_mapping(gcodes)
         return states, confi
 
-    def to_g(self, states, temp=1, input=None):
+    def to_g(self, states, temp=1, inputs=None, with_u=True):
         """ state encoder """
-        return self.mapping(states, temp=temp, collision_margin=self.collision_margin, input=input)
+        return self.mapping(states, temp=temp, collision_margin=self.collision_margin, inputs=inputs, with_u=with_u)
 
     def get_A_Ainv(self, get_A_inv=False, get_B=True):
         A = self.dynamics.dynamics.weight.data
@@ -531,6 +453,15 @@ class KoopmanOperators(nn.Module, ABC):
         A = self.dynamics.dynamics.weight.data
         return A
 
+    def get_AB(self):
+        A = self.dynamics.dynamics.weight.data
+        B = self.dynamics.u_dynamics.weight.data
+        return A, B
+
+    def add_noise_to_A(self, std=0.1):
+        A = self.dynamics.dynamics.weight.data
+        self.dynamics.dynamics.weight.data = A + torch.randn_like(A)*std / (A.shape[0])
+
     def limit_rank_k(self, k=None):
         if k is not None:
             U, S, V = torch.svd(self.dynamics.dynamics.weight.data)
@@ -544,19 +475,26 @@ class KoopmanOperators(nn.Module, ABC):
             self.backdynamics.dynamics_back.weight.data = torch.matmul(torch.matmul(U, torch.diag_embed(S)), V.transpose(-2, -1))
 
     def print_SV(self):
-            U, S, V = torch.svd(self.dynamics.dynamics.weight.data)
-            E = torch.eig(self.dynamics.dynamics.weight.data)[0]
+            A = self.dynamics.dynamics.weight.data
+            # A += torch.eye(A.shape[0]).to(A.device)
+            U, S, V = torch.svd(A)
+            E = torch.eig(A)[0]
             mod_E = torch.norm(E, dim=-1)
             print('Singular Values FW:\n',str(S.data.detach().cpu().numpy()),'\nEigenvalues FW:\n',str(mod_E.data.detach().cpu().numpy()))
 
-    def linear_forward(self, g):
+    def linear_forward(self, g, u=None):
         """
         :param g: B x N x D
         :return:
         """
         ''' B x N x R D '''
-        B, N, T, dim = g.shape
-        new_g = (self.dynamics(g.reshape(B*N*T, -1))).reshape(B, N, T, -1)
+        B, N, T, c, dim = g.shape
+        g_in = g.reshape(B*N*T, *g.shape[-2:])
+        if u is not None:
+            u = u.reshape(B*N*T, *u.shape[-2:])
+        new_g = (self.dynamics(g_in, u)).reshape(B, N, T, *g.shape[-2:])
+        # new_g.register_hook(lambda x: torch.clamp(x, min=-0, max=0))
+        # new_g.register_hook(lambda x: print(x.norm()))
         return new_g
 
     def rollout_in_out(self, g, T, init_s, inputs=None, temp=1, logit_out=False):
@@ -630,7 +568,7 @@ class KoopmanOperators(nn.Module, ABC):
 
         return torch.cat(out_states, 2), torch.cat(g_list, 2), (u_list,  u_logit), (sel_list, sel_logit_list), selectors
 
-    def rollout(self, g, T, init_s, inputs=None, temp=1, logit_out=False):
+    def rollout(self, g, T, inputs=None, temp=1, logit_out=False, with_u = True):
         """
         :param g: B x N x D
         :param rel_attrs: B x N x N x R
@@ -639,30 +577,105 @@ class KoopmanOperators(nn.Module, ABC):
         """
         # TODO: Test function.
         B, N, _, gs, ns = g.shape
-        g_list = [g.transpose(-2, -1).flatten(start_dim=-2)]
+        g_list = []
 
+        u_list = [] # Note: Realize that first element of u_list corresponds to g(t) and first element of g_list to g(t+1)
+        u_logit_list = []
+        sel_list = []
+        sel_logit_list = []
+        selector_list = []
         if inputs is None:
             in_t = None
 
-        # in_states = [torch.cat([init_s, out_states[-1]], dim=-2)]
-        # ut.print_var_shape(out_states[0], 's in rollout')
-        g_out = g
-        for t in range(T):
-            # TODO: check correspondence between g and in_states
-            # if inputs is not None:
-            #     in_t = inputs[..., t, :]
+        out_s, out_c = self.inv_mapping(g)
+        out_states = [out_s]
+        out_confis = [out_c]
 
+        for t in range(T):
+            if inputs is not None:
+                in_t = inputs[..., t, :]
+            g_in, u_in, u_tp, sel_tp, selector = self.mapping(out_states[t], temp=temp, collision_margin=self.collision_margin, inputs=in_t, with_u = with_u)
+            u, u_logits = u_tp
+            sel, sel_logits = sel_tp
+            selector_list.append(selector)
+
+            if len(u_list) == 0:
+                u_list.append(u)
+                u_logit_list.append(u_logits)
+                # input_list.append(inputs[:, None, :])
+            if self.with_interactions and len(sel_list)==0:
+                sel_list.append(sel)
+                sel_logit_list.append(sel_logits)
+
+            if t == 0:
+                g_list.append(g_in)
             # Propagate with A
-            g_out = self.rollout_1step(g_out)
+            g_out = self.rollout_1step(g_in, u_in)
             g_list.append(g_out)
+            out_s, out_c = self.inv_mapping(g_out)
+            out_states.append(out_s)
+            out_confis.append(out_c)
 
         gs = torch.cat(g_list, 2)
-        _, _, T, _ = gs.shape
-        out_states, out_confi = self.inv_mapping(gs)
+        out_state = torch.cat(out_states, 2)
+        out_confi = torch.cat(out_confis, 2)
+        return out_state, out_confi, gs, (None,  None), (None, None), None
 
-        return out_states, out_confi, gs, (None,  None), (None, None), None
+    def rollout_B(self, g, T, inputs=None, temp=1, logit_out=False, with_u = True):
+        """
+        :param g: B x N x D
+        :param rel_attrs: B x N x N x R
+        :param T:
+        :return:
+        """
+        # TODO: Test function.
+        B, N, _, gs, ns = g.shape
+        g_list = []
 
-    def rollout_1step(self, g_stack):
+        u_list = [] # Note: Realize that first element of u_list corresponds to g(t) and first element of g_list to g(t+1)
+        u_logit_list = []
+        sel_list = []
+        sel_logit_list = []
+        selector_list = []
+        if inputs is None:
+            in_t = None
+
+        out_s, out_c = self.inv_mapping(g)
+        out_states = [out_s]
+        out_confis = [out_c]
+
+        g_in = g
+        for t in range(T):
+            if inputs is not None:
+                in_t = inputs[..., t, :]
+            _, u_in, u_tp, sel_tp, selector = self.mapping(out_states[t], temp=temp, collision_margin=self.collision_margin, inputs=in_t, with_u = with_u)
+            u, u_logits = u_tp
+            sel, sel_logits = sel_tp
+            selector_list.append(selector)
+
+            if len(u_list) == 0:
+                u_list.append(u)
+                u_logit_list.append(u_logits)
+                # input_list.append(inputs[:, None, :])
+            if self.with_interactions and len(sel_list)==0:
+                sel_list.append(sel)
+                sel_logit_list.append(sel_logits)
+
+            if t == 0:
+                g_list.append(g_in)
+            # Propagate with A
+            g_in = self.rollout_1step(g_in, u_in)
+            g_list.append(g_in)
+            out_s, out_c = self.inv_mapping(g_in)
+            out_states.append(out_s)
+            out_confis.append(out_c)
+
+        gs = torch.cat(g_list, 2)
+        out_state = torch.cat(out_states, 2)
+        out_confi = torch.cat(out_confis, 2)
+        return out_state, out_confi, gs, (None,  None), (None, None), None
+
+    def rollout_1step(self, g_stack, u = None):
         """
         :param g: B x N x D
         :param rel_attrs: B x N x N x R
@@ -670,18 +683,12 @@ class KoopmanOperators(nn.Module, ABC):
         :return:
         """
         if len(g_stack.shape) == 5:
-            B, N, T, gs, n = g_stack.shape
-
-            # g_in = g_stack.sum(-1)
-            g_in = g_stack.transpose(-2, -1).flatten(start_dim=-2)
-        elif len(g_stack.shape) == 4:
-            B, N, T, gs = g_stack.shape
+            B, N, T, c, gs = g_stack.shape
             g_in = g_stack
-
         else:
             raise NotImplementedError
 
-        g_out = self.linear_forward(g_in).reshape(B, N, T, -1)
+        g_out = self.linear_forward(g_in, u).reshape(B, N, T, c, gs) #+ g_in
 
         return g_out
 
@@ -699,7 +706,7 @@ class KoopmanOperators(nn.Module, ABC):
         x = x.reshape(-1, T, *x.shape[2:])
         new_x = []
         for t in range(new_T):
-            new_x.append(torch.stack([x[:, t + idx]
+            new_x.append(torch.stack([x[:, t + (self.n_timesteps-idx-1)]
                                       for idx in range(self.n_timesteps)], dim=-1))
         # torch.cat([ torch.zeros_like( , x[:,0,0:1]) + self.t_grid[idx]], dim=-1)
         new_x = torch.stack(new_x, dim=1)

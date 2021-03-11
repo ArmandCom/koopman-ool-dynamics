@@ -85,7 +85,7 @@ class MovingMNISTDataset(data.Dataset):
         start_x = np.zeros(seq_length)
 
         if motion_type == 'circles':
-            y = y * 0.6 + 0.2
+            y = y * 0.4 + 0.2
             x = x * 0.6 + 0.2
 
             R = random.random()*0.4 + 0.2
@@ -99,6 +99,7 @@ class MovingMNISTDataset(data.Dataset):
                 R = y - random.random()*0.1
 
             factor = 2
+            self.step_length_ = 0.2 + random.random() * 0.1
             t = np.linspace(0, seq_length * self.step_length_ * factor, seq_length)
 
             if random.random() < 0.5:
@@ -107,7 +108,7 @@ class MovingMNISTDataset(data.Dataset):
             start_x, start_y = R*np.cos(t) + x, R*np.sin(t) + y
 
         if motion_type == 'constant_vel':
-            elc = 1.2 # was 1.1 without inversions
+            elc = 0.8 # was 1.1 without inversions
             for i in range(seq_length):
                 # Take a step along velocity.
                 y += v_y * self.step_length_
@@ -163,8 +164,14 @@ class MovingMNISTDataset(data.Dataset):
             # Generate data on the fly
             images = self.generate_moving_mnist(num_digits)
         else:
-            images = self.dataset[:, idx, ...]
-
+            print('test_data')
+            num_digits = self.num_objects
+            images = self.generate_moving_mnist(num_digits)
+            # images = self.dataset[:, idx, ...]
+        if self.motion_type == 'circles':
+            images = np.stack([self.crop_top_left_keepdim(images[i, ..., 0], 96, None)
+                          for i in range(images.shape[0])])[..., np.newaxis]
+            # print(images.shape)
         if self.transform is not None:
             images = self.transform(images)
         input = images[:self.n_frames_input]
@@ -176,4 +183,13 @@ class MovingMNISTDataset(data.Dataset):
         return input #, output
 
     def __len__(self):
-        return len(self.split)
+        length = len(self.split)
+        if self.is_train:
+            length = 2000
+        return length
+
+    def crop_top_left_keepdim(self, img, cropx, cropy):
+        y, x = img.shape
+        # img[:, :(x - cropx)] = 0
+        img[:(y - cropx), :] = 0
+        return img

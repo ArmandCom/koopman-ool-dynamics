@@ -50,7 +50,14 @@ class ImageEncoder(nn.Module):
                             nn.BatchNorm2d(256), # TODO: Bias to False.
                             nn.Conv2d(256, last_hidden_dim, 1)])
         elif image_size[0] == 64:
-            layers.extend([nn.Conv2d(128, 256, 3, 1, 1),
+            # layers.extend([nn.Conv2d(128, 256, 3, 1, 1),
+            #                nn.CELU(),
+            #                nn.BatchNorm2d(256), # TODO: Bias to False.
+            #                nn.Conv2d(256, last_hidden_dim, 1)])
+            layers.extend([nn.Conv2d(128, 128, 4, 2, 1), # 8, 8
+                           nn.CELU(),
+                           nn.BatchNorm2d(128),
+                           nn.Conv2d(128, 256, 3, 1, 1),
                            nn.CELU(),
                            nn.BatchNorm2d(256), # TODO: Bias to False.
                            nn.Conv2d(256, last_hidden_dim, 1)])

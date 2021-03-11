@@ -140,11 +140,12 @@ class Trainer(BaseTrainer):
 
     def _show(self, data, output, train=True):
 
-        data_plot = data[0, -output["pred"].shape[1]:]
-        rec_plot = output["rec"][0, -output["pred"].shape[1]:]
-        pred_plot = output["pred"][0]
+        rec = output["rec_ori"]
+        data_plot = data[0, -output["pred_roll"].shape[1]:]
+        rec_plot = output["rec_ori"][0, -output["pred_roll"].shape[1]:]
+        pred_plot = output["pred_roll"][0]
         vid_plot = torch.cat([data_plot, rec_plot, pred_plot], dim=0)
-        self.writer.add_image('a-Videos--Input-Rec-Pred', make_grid(vid_plot.cpu(), nrow=output["pred"].shape[1], normalize=True))
+        self.writer.add_image('a-Videos--Input-Rec-Pred', make_grid(vid_plot.cpu(), nrow=output["pred_roll"].shape[1], normalize=True))
 
         # self.writer.add_image('a-input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
         # self.writer.add_image('b-output_rec', make_grid(output["rec"][0, -output["pred"].shape[1]:].cpu(), nrow=output["pred"].shape[1], normalize=True))
@@ -155,8 +156,8 @@ class Trainer(BaseTrainer):
         #     S_plot = plot_matrix(output["selector"])
         #     self.writer.add_image('ba-S', make_grid(S_plot, nrow=1, normalize=False))
         if output["obs_rec_pred"] is not None:
-            g_plot = plot_representation        (output["obs_rec_pred"][:,output["rec"].shape[1]-output["pred"].shape[1]:output["rec"].shape[1]].cpu())
-            g_plot_pred = plot_representation   (output["obs_rec_pred"][:,output["rec"].shape[1]:].cpu())
+            g_plot = plot_representation        (output["obs_rec_pred"][:,rec.shape[1]-output["pred"].shape[1]:rec.shape[1]].cpu())
+            g_plot_pred = plot_representation   (output["obs_rec_pred"][:,rec.shape[1]:].cpu())
             self.writer.add_image('d-g_repr_rec', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
             self.writer.add_image('e-g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
         if output["obs_rec_pred_rev"] is not None:
@@ -165,10 +166,12 @@ class Trainer(BaseTrainer):
         if output["dyn_features"] is not None:
             # g_plot = plot_representation        (output["dyn_features"]["rec_ori"].cpu())
             # self.writer.add_image('states_rec_ori', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
-            g_plot = plot_representation        (output["dyn_features"]["rec"][:,-output["pred"].shape[1]:].cpu())
+            g_plot = plot_representation        (output["dyn_features"]["rec_ori"][:,-output["pred"].shape[1]:].cpu())
             self.writer.add_image('states_rec', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
             g_plot = plot_representation        (output["dyn_features"]["pred"].cpu())
             self.writer.add_image('states_pred', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
+            g_plot = plot_representation        (output["dyn_features"]["pred_roll"].cpu())
+            self.writer.add_image('states_pred_roll', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
         if output["A"] is not None:
             A_plot = plot_matrix(output["A"])
             self.writer.add_image('f-A', make_grid(A_plot, nrow=1, normalize=False))
@@ -182,10 +185,15 @@ class Trainer(BaseTrainer):
         #     self.writer.add_image('fb-AA', make_grid(AA_plot, nrow=1, normalize=False))
         if output["selectors_rec"] is not None:
             sels_rec = output["selectors_rec"]
-            sels_pred = output["selectors_pred"]
-            sel_rec_plot = plot_representation(sels_rec[:,-sels_pred.shape[1]:].cpu())
-            sel_pred_plot = plot_representation(sels_pred.cpu())
+            if output["selectors_pred"] is not None:
+                sels_pred = output["selectors_pred"]
+                sel_rec_plot = plot_representation(sels_rec[:,-sels_pred.shape[1]:].cpu())
+            else:
+                sel_rec_plot = plot_representation(sels_rec.cpu())
             self.writer.add_image('b-sel_repr_rec', make_grid(to_tensor(sel_rec_plot), nrow=1, normalize=False))
+        if output["selectors_pred"] is not None:
+            sels_pred = output["selectors_pred"]
+            sel_pred_plot = plot_representation(sels_pred.cpu())
             self.writer.add_image('b-sel_repr_pred', make_grid(to_tensor(sel_pred_plot), nrow=1, normalize=False))
         if output["B"] is not None:
             B_plot = plot_matrix(output["B"])

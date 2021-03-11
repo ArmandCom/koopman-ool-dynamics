@@ -1,8 +1,8 @@
 import numpy as np
 from torch.utils.data import DataLoader
 from torch.utils.data.dataloader import default_collate
-from torch.utils.data.sampler import SubsetRandomSampler, WeightedRandomSampler
-
+from torch.utils.data.sampler import SubsetRandomSampler, BatchSampler
+from torch.utils.data import Sampler
 from PIL import Image
 
 
@@ -10,7 +10,7 @@ class BaseDataLoader(DataLoader):
     """
     Base class for all data loaders
     """
-    def __init__(self, dataset, batch_size, shuffle, n_objects_to_repeat, validation_split, dataset_reduction, num_workers, collate_fn=default_collate):
+    def __init__(self, dataset, batch_size, shuffle, n_objects_to_repeat, validation_split, dataset_reduction, num_workers, collate_fn=default_collate, training=True):
         self.validation_split = validation_split
         self.shuffle = shuffle
 
@@ -19,7 +19,11 @@ class BaseDataLoader(DataLoader):
         # self.n_samples = len(dataset.images)
         self.n_samples = len(dataset.split)
 
-        self.sampler, self.valid_sampler = self._split_sampler(self.validation_split, dataset_reduction, n_objects_to_repeat)
+        if training:
+            self.sampler, self.valid_sampler = self._split_sampler(self.validation_split, dataset_reduction, n_objects_to_repeat)
+        else:
+            test_size = 2000
+            self.sampler = BatchSampler(Sampler(np.arange(test_size)), batch_size, drop_last=True)
 
         self.init_kwargs = {
             'dataset': dataset,

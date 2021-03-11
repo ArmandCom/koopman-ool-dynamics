@@ -27,7 +27,7 @@ data_loader:
     validation_split: 0.1
     dataset_reduction: 0.0 #0.94
     num_workers: 2
-
+    training: True
 
 # TODO: probar betas=(0.5, 0.999))
 arch:
@@ -35,13 +35,13 @@ arch:
   args:
     in_channels: 1
     feat_dim: &Fdim 50
-    g_dim: &Gdim 20
+    g_dim: &Gdim 12
     r_dim: 10
     u_dim: 4
     n_objects: *Nobj
     I_factor: 1
     n_blocks: 1
-    nf_particle: &Hdim 50
+    nf_particle: &Hdim 40
     nf_effect: *Hdim
     psteps: 1
     n_timesteps: *NTS
@@ -56,9 +56,9 @@ arch:
 optimizer:
   type: "Adam"
   args:
-    lr: 3e-4
-    betas: [0.5, 0.999]
-    weight_decay: 0.001
+    lr: 5e-4
+    betas: [0.9, 0.999]
+    weight_decay: 0.0001
     amsgrad: true
 
 metrics: [] #["accuracy", "top_k_acc"]

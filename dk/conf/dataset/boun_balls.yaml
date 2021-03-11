@@ -4,8 +4,9 @@ n_gpu: 1
 # Global variables
 n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
 image_size: &IS [64, 64] # Input image size
-seq_length: &SeqL 15 # Length of the observed sequence.
-n_objects: &Nobj 2
+seq_length: &SeqL 17 # Length of the observed sequence.
+n_objects: &Nobj 4
+# Augmentar sampling rate
 
 log_step: 100
 
@@ -36,7 +37,7 @@ arch:
   args:
     in_channels: 3
     feat_dim: &Fdim 25
-    g_dim: &Gdim 10
+    g_dim: &Gdim 30
     r_dim: 10
     u_dim: 2
     n_objects: *Nobj
@@ -49,10 +50,10 @@ arch:
     ngf: 8
     image_size: *IS
     free_pred: 15
-    with_interactions: True
+    with_interactions: False
     batch_size: *BS
     cte_app: False
-    collision_margin: 0.3
+#    collision_margin: 0.3
 
 optimizer:
   type: "Adam"

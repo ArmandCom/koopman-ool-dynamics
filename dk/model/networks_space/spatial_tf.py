@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 class SpatialTransformation(nn.Module):
-    def __init__(self, wh, WH, out_channels, zeta_s=.1, zeta_r=[1, 0.1]): #Note: Changed from 0.1, 1-0.1
+    def __init__(self, wh, WH, out_channels, zeta_s=.2, zeta_r=[1, 0.1]): #Note: Changed from 0.1, 1-0.1
         super().__init__()
         self.bg = 0 # No background at this moment
         self.zeta_s, self.zeta_r = zeta_s, zeta_r
@@ -25,6 +25,7 @@ class SpatialTransformation(nn.Module):
         # Generate 2D transformation matrix
         if len(y_e.shape) == 2:
             y_e = y_e[..., None, None]
+
         trans_x, trans_y, scale, ratio = y_p.split(1, 1) # N * 1
         scale = 1 + self.zeta_s*scale
         ratio = self.zeta_r[0] + self.zeta_r[1]*ratio

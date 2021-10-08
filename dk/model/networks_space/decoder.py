@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from utils import tracker_util as ut
 
 class ImageDecoder(nn.Module):
   def __init__(self, input_size, out_ch, dyn_dim):
@@ -60,51 +61,134 @@ class ImageDecoder(nn.Module):
       nn.Conv2d(16, out_ch, 3, 1, 1) # output channels. If your input is RGB, out_ch=3
     )
 
+    self.to_x = nn.Sequential(
+      nn.Conv2d(init_ch, 128, 3, 1, 1), # 2, 2
+      nn.UpsamplingBilinear2d(scale_factor=2),
+      nn.CELU(),
+      nn.BatchNorm2d(128),
+      nn.Conv2d(128, 128, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(128),
+
+      nn.Conv2d(128, 128, 3, 1, 1), # 4, 4
+      nn.UpsamplingBilinear2d(scale_factor=2),
+      nn.CELU(),
+      nn.BatchNorm2d(128),
+      nn.Conv2d(128, 128, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(128),
+      # --
+      nn.Conv2d(128, 64, 3, 1, 1), # 8, 8
+      nn.UpsamplingBilinear2d(scale_factor=2),
+      nn.CELU(),
+      nn.BatchNorm2d(64),
+      nn.Conv2d(64, 64, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(64),
+      # --
+      nn.Conv2d(64, 32, 3, 1, 1), # 16, 16
+      nn.UpsamplingBilinear2d(scale_factor=2),
+      nn.CELU(),
+      nn.BatchNorm2d(32),
+      nn.Conv2d(32, 32, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(32),
+      # --
+      nn.Conv2d(32, 16, 3, 1, 1), # 32, 32
+      nn.UpsamplingBilinear2d(scale_factor=2),
+      nn.CELU(),
+      nn.BatchNorm2d(16),
+      nn.Conv2d(16, 16, 3, 1, 1),
+      nn.CELU(),
+      nn.BatchNorm2d(16),
+      # --
+      nn.Conv2d(16, out_ch, 3, 1, 1) # output channels. If your input is RGB, out_ch=3
+    )
+    self.st_gumbel_sigmoid = ut.STGumbelSigmoid()
+
   def forward(self, input, block = 'all'):
-    bs, dim = input.shape
-    input = input.reshape(*input.size(), 1, 1)
-    x = self.init_dec_cnn(input)
+        bs, dim = input.shape
+        input = input.reshape(*input.size(), 1, 1)
+        x = self.init_dec_cnn(input)
 
-    if block == 'to_x':
-      x = torch.sigmoid(self.to_x(x)) # output will be [0, 1]
+        if block == 'to_x':
+          x = self.to_x(x) # output will be [0, 1]
 
-    return x
+        Y_s = x[:, -1:].sigmoid()
+        Y_s = self.st_gumbel_sigmoid(Y_s)
+        Y_a = x[:, :-1].sigmoid()
+        return Y_a, Y_s
 
 class ImageBroadcastDecoder(nn.Module): # lots of memory
   def __init__(self, input_size, out_ch, resolution=(32, 32)):
     super(ImageBroadcastDecoder, self).__init__()
 
     # at the beginning bs, T, chan, 8 x 8 --> 128 x 128
+    # self.to_x = nn.Sequential(
+    #   nn.Conv2d(input_size + 4, 128, 1), # 8, 8
+    #   nn.ReLU(),
+    #   nn.BatchNorm2d(128),
+    #   nn.Conv2d(128, 128, 3, 1, 1),
+    #   nn.ReLU(),
+    #   nn.BatchNorm2d(128),
+    #   # --
+    #   nn.Conv2d(128, 64 * 2 * 2, 1),
+    #   nn.PixelShuffle(2),
+    #   nn.ReLU(),
+    #   nn.Conv2d(64, 64, 3, 1, 1),
+    #   nn.ReLU(),
+    #   nn.BatchNorm2d(64),
+    #   # --
+    #   nn.BatchNorm2d(64),
+    #   nn.Conv2d(64, 64 * 2 * 2, 1),
+    #   nn.PixelShuffle(2),
+    #   nn.ReLU(),
+    #   nn.BatchNorm2d(64),
+    #   nn.Conv2d(64, 32, 3, 1, 1),
+    #   nn.ReLU(),
+    #   nn.BatchNorm2d(32),
+    #   # --
+    #   nn.Conv2d(32, 32 * 2 * 2, 1), # 128, 128
+    #   nn.PixelShuffle(2),
+    #   nn.ReLU(),
+    #   nn.BatchNorm2d(32),
+    #   nn.Conv2d(32, 16, 3, 1, 1),
+    #   nn.ReLU(),
+    #   nn.BatchNorm2d(16),
+    #   nn.Conv2d(16, out_ch, 1)
+    # )
+
+    # with upsampling.
     self.to_x = nn.Sequential(
       nn.Conv2d(input_size + 4, 128, 1), # 8, 8
-      nn.ReLU(),
+      nn.CELU(),
       nn.BatchNorm2d(128),
       nn.Conv2d(128, 128, 3, 1, 1),
-      nn.ReLU(),
+      nn.CELU(),
       nn.BatchNorm2d(128),
       # --
-      nn.Conv2d(128, 64 * 2 * 2, 1),
-      nn.PixelShuffle(2),
-      nn.ReLU(),
+      nn.Conv2d(128, 64, 3, 1, 1),
+      nn.UpsamplingBilinear2d(scale_factor=2),
+      nn.CELU(),
       nn.Conv2d(64, 64, 3, 1, 1),
-      nn.ReLU(),
+      nn.CELU(),
       nn.BatchNorm2d(64),
       # --
       nn.BatchNorm2d(64),
-      nn.Conv2d(64, 64 * 2 * 2, 1),
-      nn.PixelShuffle(2),
-      nn.ReLU(),
+      nn.Conv2d(64, 64, 3, 1, 1),
+      nn.UpsamplingBilinear2d(scale_factor=2),
+      nn.CELU(),
       nn.BatchNorm2d(64),
       nn.Conv2d(64, 32, 3, 1, 1),
-      nn.ReLU(),
+      nn.CELU(),
       nn.BatchNorm2d(32),
       # --
-      nn.Conv2d(32, 32 * 2 * 2, 1), # 128, 128
-      nn.PixelShuffle(2),
-      nn.ReLU(),
+      nn.Conv2d(32, 32, 3, 1, 1), # 128, 128
+      nn.UpsamplingBilinear2d(scale_factor=2),
+      nn.CELU(),
       nn.BatchNorm2d(32),
       nn.Conv2d(32, 16, 3, 1, 1),
-      nn.ReLU(),
+      nn.CELU(),
       nn.BatchNorm2d(16),
       nn.Conv2d(16, out_ch, 1)
     )

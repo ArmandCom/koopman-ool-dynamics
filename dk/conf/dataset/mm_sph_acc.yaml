@@ -2,50 +2,48 @@ name: "Koopman_Disentanglement"
 n_gpu: 1
 
 # Global variables
-n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
-image_size: &IS [64, 64] # Input image size
-seq_length: &SeqL 10 # Length of the observed sequence.
-n_objects: &Nobj 4
-# Augmentar sampling rate
+n_timesteps: &NTS 6 # Number of timesteps seen in each state. Time length of the state
+image_size: &IS [64, 64] #[128, 128] # Input image size
+seq_length: &SeqL 16 # Length of the observed sequence.
+n_objects: &Nobj 2
 
 log_step: 50
 
 loss: "embedding_loss"
 #loss: "explicit_embedding_loss"
 
-# Works after 13000 iters
+
 data_loader:
-  type: "BouncingBallsLoader"
+  type: "MovingMNISTLoader"
   args:
-    dataset_case: "boun_balls"
+    dataset_case: "spherical_manifold_accelerate"
     dataset_name: ""
     seq_length: *SeqL
     seq_stride: 1
+    image_size: 64
     n_objects: *Nobj
-    data_dir: "/home/acomasma/ool-dynamics/data"
+    data_dir: "/home/acomasma/ool-dynamics/deep-koopman/data"
     batch_size: &BS 40
     shuffle: true
-    training_split: 0.8
-    validation_split: 0.2
+    training_split: 0.9
+    validation_split: 0.1
     dataset_reduction: 0.0 #0.94
-    num_workers: 4
-    image_size: *IS
+    num_workers: 2
     training: True
-
 
 # TODO: probar betas=(0.5, 0.999))
 arch:
   type: "RecKoopmanModel"
   args:
-    in_channels: 3
-    feat_dim: &Fdim 25
+    in_channels: 1
+    feat_dim: &Fdim 50
     g_dim: &Gdim 30
     r_dim: 10
-    u_dim: 2
+    u_dim: 4
     n_objects: *Nobj
     I_factor: 1
     n_blocks: 1
-    nf_particle: &Hdim 30
+    nf_particle: &Hdim 60
     nf_effect: *Hdim
     psteps: 1
     n_timesteps: *NTS
@@ -65,7 +63,8 @@ optimizer:
     weight_decay: 0.0001
     amsgrad: true
 
-metrics: [] #["accuracy", "top_k_acc"]
+metrics: []
+  #["mse", "mae", "mlpips", "mssim"]
 
 #lr_scheduler:
 #  type: "StepLR"
@@ -77,12 +76,12 @@ lr_scheduler:
   type: "ReduceLROnPlateau"
   args:
     mode: 'min'
-    factor: 0.8
-    patience: 15
+    factor: 0.7
+    patience: 4
     verbose: True
 
 trainer:
-  epochs: 200
+  epochs: 300
   save_dir: ""
   save_period: 1
   verbosity: 2

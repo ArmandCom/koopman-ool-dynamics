@@ -130,6 +130,7 @@ class BaseTrainer:
         list_ids = [sorted_mem_map[idx] for idx in indices]
         # print(list_ids)
         device = torch.device('cuda:{}'.format(list_ids[0]) if n_gpu_use > 0 else 'cpu')
+        print('GPU: ', device)
         return device, list_ids
 
     def _save_checkpoint(self, epoch, save_best=False):

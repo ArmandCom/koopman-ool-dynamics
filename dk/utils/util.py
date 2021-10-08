@@ -75,8 +75,8 @@ def plot_matrix(M, instance=0):
     M = M[instance, :, None, :, None].repeat(1, expand, 1, expand)
     M = M.reshape(-1, side * expand)
 
-    M = torch.abs(M)
-    M = M / M.max()
+    # M = torch.abs(M)
+    # M = M / M.max()
     return M
 
 def block_diagonal(A):

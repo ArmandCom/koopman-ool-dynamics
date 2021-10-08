@@ -1,15 +1,30 @@
 defaults:
-  - dataset: mov_mnist
+#  - dataset: mm_circ_crop # Increase step decrease T to 13
+#  - dataset: mm_sph
+#  - dataset: mm_cte_vel
+#  - dataset: mov_mnist
 #  - dataset: boun_balls
 #  - dataset: dsprites
-
-#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_circ_miss/Koopman_Disentanglement/models/checkpoint-epoch1.pth'
-#resume_modules: ['linear_f_cte_post', 'linear_f_dyn_post', 'image_decoder', 'image_encoder', 'koopman'] #divide into resume/freeze/skiptrain/skipfreeze
-#train_submodules: ['image_encoder.tracker.ntm.fcn', 'koopman']
+  - dataset: clevrer
 
 resume:
 resume_modules:
 train_submodules:
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_5/Koopman_Disentanglement/models/checkpoint-epoch2.pth'
+
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_cte_vel_64/Koopman_Disentanglement/models/checkpoint-epoch200.pth'
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_64_ds20/Koopman_Disentanglement/models/checkpoint-epoch199.pth'
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_circ_crop_06-64_A0_wlosses/Koopman_Disentanglement/models/checkpoint-epoch6.pth'
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_A0/Koopman_Disentanglement/models/checkpoint-epoch1.pth'
+#resume_modules: ['linear_f_cte_post', 'linear_f_dyn_post', 'image_decoder', 'image_encoder', 'koopman'] #divide into resume/freeze/skiptrain/skipfreeze
+#train_submodules: ['image_encoder.tracker.ntm.fcn', 'koopman']
+
+# Test #test_sph_A0_64_lowrK_6ts
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_64_ds20/Koopman_Disentanglement/models/checkpoint-epoch250.pth'
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_circ_cropop_final/Koopman_Disentanglement/models/checkpoint-epoch250.pth' #test_circ_crop_06-64_A0_wlosses
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_circle_final/Koopman_Disentanglement/models/checkpoint-epoch250.pth' #test_circ_06-64_A0_wlosses
+#resume: '/home/acomasma/ool-dynamics/dk/outputs/test_cte_vel_final/Koopman_Disentanglement/models/checkpoint-epoch250.pth'
+
 
 device:
 run_id:

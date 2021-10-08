@@ -87,11 +87,11 @@ class NTM(nn.Module):
 
         # Sort h_o_prev and y_e_prev
         # Note: REP
-        # delta = torch.arange(0, self.n_objects).float().to(h_o_prev.device).unsqueeze(0) * 0.0001 # 1 * O
-        # y_e_prev_mdf = y_e_prev.squeeze(2).round() - delta
-        # perm_mat = self.permutation_matrix_calculator(y_e_prev_mdf) # N * O * O
-        # h_o_prev = perm_mat.bmm(h_o_prev) # N * O * dim_h_o
-        # y_e_prev = perm_mat.bmm(y_e_prev) # N * O * dim_y_e
+        delta = torch.arange(0, self.n_objects).float().to(h_o_prev.device).unsqueeze(0) * 0.0001 # 1 * O
+        y_e_prev_mdf = y_e_prev.squeeze(2).round() - delta
+        perm_mat = self.permutation_matrix_calculator(y_e_prev_mdf) # N * O * O
+        h_o_prev = perm_mat.bmm(h_o_prev) # N * O * dim_h_o
+        y_e_prev = perm_mat.bmm(y_e_prev) # N * O * dim_y_e
 
         # Update h_o
         h_o_prev_split = torch.unbind(h_o_prev, 1) # N * dim_h_o
@@ -103,15 +103,15 @@ class NTM(nn.Module):
             # TODO: Maybe add h_o of previous object.
             h_o_split[i], C_o, k_split[i], r_split[i] = self.ntm_cell(h_o_prev_split[i], C_o)
         h_o = torch.stack(tuple(h_o_split.values()), dim=1) # N * O * dim_h_o
-        k = torch.stack(tuple(k_split.values()), dim=1) # N * O * C2_2
-        r = torch.stack(tuple(r_split.values()), dim=1) # N * O * C2_2
+        # k = torch.stack(tuple(k_split.values()), dim=1) # N * O * C2_2
+        # r = torch.stack(tuple(r_split.values()), dim=1) # N * O * C2_2
         # att = self.ntm_cell.att
         # mem = self.ntm_cell.mem
 
         # Recover the original order of h_o
         # Note: REP
-        # perm_mat_inv = perm_mat.transpose(1, 2) # N * O * O
-        # h_o = perm_mat_inv.bmm(h_o) # N * O * dim_h_o
+        perm_mat_inv = perm_mat.transpose(1, 2) # N * O * O
+        h_o = perm_mat_inv.bmm(h_o) # N * O * dim_h_o
         # k = perm_mat_inv.bmm(k) # N * O * dim_c_2
         # r = perm_mat_inv.bmm(r) # N * O * dim_c_2
 
@@ -241,7 +241,7 @@ class NTMCell(nn.Module):
         beta_neg = beta_pre.clamp(max=0)
         beta = beta_neg.exp().log1p() + beta_pos + (-beta_pos).exp().log1p() + (1 - np.log(2)) # N * 1
         # Weighting
-        C_cos = ut.Identity()(C)
+        C_cos = C #ut.Identity()(C) # TODO: Is this ok?
         ut.norm_grad(C_cos, 1)
         s = self.cosine_similarity(C_cos, k_expand).view(-1, C.shape[1]) # N * C2_1
         w = self.softmax(s * beta) # N * C2_1

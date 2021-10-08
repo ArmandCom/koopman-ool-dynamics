@@ -1,11 +1,15 @@
 from torchvision import datasets, transforms
 import torch
+import torch.nn.functional as F
 from base import BaseDataLoader
 from data_loader.ground_truth import named_data
 from data_loader.dlib_dataset import DisentanglementDataset
-from data_loader.moving_mnist_dataset import MovingMNISTDataset
+# from data_loader.moving_mnist_dataset import MovingMNISTDataset, MovingMNISTDataset_centered
+from data_loader.moving_mnist import MovingMNISTDataset, MovingMNISTDataset_centered
 from data_loader.bouncing_balls_dataset import BouncingBallsDataset
+from data_loader.clevrer_dataset import ClevrerDataset
 import numpy as np
+import collections
 
 class MnistDataLoader(BaseDataLoader):
     """
@@ -42,23 +46,28 @@ class MovingMNISTLoader(BaseDataLoader):
     """
     disentanglement_lib dataset loading using BaseDataLoader
     """
-    def __init__(self, dataset_name, seq_length, seq_stride, n_objects, data_dir, batch_size, shuffle=True, training_split=0.9, validation_split=0.0, dataset_reduction=0, num_workers=1, training=True):
-
-        total_batch_size = batch_size * n_objects #This is a patchy way of doing it
+    def __init__(self, dataset_case, dataset_name, seq_length, seq_stride, n_objects, data_dir, batch_size, image_size=128, shuffle=True, training_split=0.9, validation_split=0.0, dataset_reduction=0, num_workers=1, training=True):
+        total_batch_size = batch_size #This is a patchy way of doing it
         self.data_dir = data_dir
         self.name = dataset_name
-        transform = transforms.Compose([ToTensor()])
-        self.dataset = MovingMNISTDataset(data_dir, training, seq_length,
-                                   0, 1, training_split, transform) #TODO: we set num_obj to 1 for all cases, to merge them in the patchy way
+        self.case = dataset_case
+        transform = transforms.Compose([ ToTensor()])
+
+        if dataset_case == 'spherical_manifold' or dataset_case == 'spherical_manifold_accelerate' :
+            self.dataset = MovingMNISTDataset_centered(self.case, data_dir, training, seq_length,
+                                                       0, n_objects, image_size, training_split, transform)
+        else:
+            self.dataset = MovingMNISTDataset(self.case, data_dir, training, seq_length,
+                                              0, n_objects, image_size, training_split, transform)
 
         super().__init__(self.dataset, total_batch_size, shuffle, n_objects, validation_split, dataset_reduction, num_workers, training=training)
+
 
 class BouncingBallsLoader(BaseDataLoader):
     """
     disentanglement_lib dataset loading using BaseDataLoader
     """
-    def __init__(self, dataset_name, seq_length, seq_stride, n_objects, data_dir, batch_size, image_size, shuffle=True, training_split=0.9, validation_split=0.0, dataset_reduction=0, num_workers=1, training=True):
-
+    def __init__(self, dataset_case, dataset_name, seq_length, seq_stride, n_objects, data_dir, batch_size, image_size, shuffle=True, training_split=0.9, validation_split=0.0, dataset_reduction=0, num_workers=1, training=True):
 
         total_batch_size = batch_size
         self.data_dir = data_dir
@@ -68,11 +77,16 @@ class BouncingBallsLoader(BaseDataLoader):
                                           0, n_objects, image_size, training_split, transform)
         super().__init__(self.dataset, total_batch_size, shuffle, 1, validation_split, dataset_reduction, num_workers, training=training)
 
-# elif opt.dset_name == 'bouncing_balls':
-# transform = transforms.Compose([vtransforms.Scale(opt.image_size),
-#                                 vtransforms.ToTensor()])
-# dset = BouncingBalls(opt.dset_path, opt.is_train, opt.n_frames_input,
-#                      opt.n_frames_output, opt.image_size[0], transform)
+class ClevrerLoader(BaseDataLoader):
+    def __init__(self, dataset_case, dataset_name, seq_length, seq_stride, n_objects, data_dir, batch_size, image_size, shuffle=True, training_split=0.9, validation_split=0.0, dataset_reduction=0, num_workers=1, training=True):
+
+        total_batch_size = batch_size
+        self.data_dir = data_dir
+        self.name = dataset_name
+        transform = transforms.Compose([ToTensor(), Resize([0.5, 0.5])])
+        self.dataset = ClevrerDataset(data_dir, training, seq_length,
+                                            0, n_objects, image_size, training_split, transform)
+        super().__init__(self.dataset, total_batch_size, shuffle, 1, validation_split, dataset_reduction, num_workers, training=training)
 
 class ToTensor(object):
     """Converts a numpy.ndarray (... x H x W x C) in the range
@@ -84,13 +98,29 @@ class ToTensor(object):
     def __call__(self, arr):
         if isinstance(arr, np.ndarray):
             video = torch.from_numpy(np.rollaxis(arr, axis=-1, start=-3))
-
-            if self.scale:
-                return video.float().div(255)
-            else:
-                return video.float()
+        elif isinstance(arr, torch.Tensor):
+            video = arr.permute(0,3,1,2).float()
         else:
             raise NotImplementedError
+
+        if self.scale:
+            return video.float().div(255)
+        else:
+            return video.float()
+
+class Resize(object):
+    """Converts a numpy.ndarray (... x H x W x C) in the range
+    [0, 255] to a torch.FloatTensor of shape (... x C x H x W) in the range [0.0, 1.0].
+    """
+    def __init__(self, scale_factor, interpolation='bilinear'):
+        assert isinstance(scale_factor, float) or (isinstance(scale_factor, collections.Iterable) and len(scale_factor) == 2)
+        self.scale_factor = scale_factor
+        self.interpolation = interpolation
+
+    def __call__(self, video):
+        h, w = video.shape[-2], video.shape[-3]
+        return F.interpolate(video, scale_factor=self.scale_factor, mode=self.interpolation)
+
 
 class Scale(object):
     """Rescale the input numpy.ndarray to the given size.

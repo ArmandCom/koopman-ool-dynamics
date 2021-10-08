@@ -3,9 +3,10 @@ n_gpu: 1
 
 # Global variables
 n_timesteps: &NTS 3 # Number of timesteps seen in each state. Time length of the state
-image_size: &IS [64, 64] # Input image size
+#image_size: &IS [320, 480] # Input image size
+image_size: &IS [160, 240] # Input image size
 seq_length: &SeqL 10 # Length of the observed sequence.
-n_objects: &Nobj 4
+n_objects: &Nobj 5
 # Augmentar sampling rate
 
 log_step: 50
@@ -15,15 +16,15 @@ loss: "embedding_loss"
 
 # Works after 13000 iters
 data_loader:
-  type: "BouncingBallsLoader"
+  type: "ClevrerLoader"
   args:
-    dataset_case: "boun_balls"
+    dataset_case: "clevrer"
     dataset_name: ""
     seq_length: *SeqL
     seq_stride: 1
     n_objects: *Nobj
-    data_dir: "/home/acomasma/ool-dynamics/data"
-    batch_size: &BS 40
+    data_dir: "/data/cleverer"
+    batch_size: &BS 20
     shuffle: true
     training_split: 0.8
     validation_split: 0.2
@@ -32,13 +33,12 @@ data_loader:
     image_size: *IS
     training: True
 
-
 # TODO: probar betas=(0.5, 0.999))
 arch:
   type: "RecKoopmanModel"
   args:
     in_channels: 3
-    feat_dim: &Fdim 25
+    feat_dim: &Fdim 100
     g_dim: &Gdim 30
     r_dim: 10
     u_dim: 2

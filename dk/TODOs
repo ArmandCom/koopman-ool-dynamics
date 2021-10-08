@@ -2,6 +2,14 @@ Todo List
 
 General TODOs
 
+-- For CVPR --
+1. Do not save 1 state per element in the batch. DONE
+2. Make it work by only Rec loss in Boun_Balls
+3. Train Koopman / Dynamics separately after convergence of the object segmentation. Different set of parameters.
+4. Broadcast decoder, new implementation.
+5.
+
+-- OLD --
 1. Increase complexity of U encoder (Not embedding)
 2. Use modified spectralnorm from Sandesh to impose smoothness in mapping and inv_mapping.
 3. In test mode we should impose always the same annealing mode for collisions.

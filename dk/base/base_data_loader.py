@@ -17,13 +17,13 @@ class BaseDataLoader(DataLoader):
         # self.batch_idx = 0
 
         # self.n_samples = len(dataset.images)
-        self.n_samples = len(dataset.split)
+        self.n_samples = dataset.length
 
         if training:
             self.sampler, self.valid_sampler = self._split_sampler(self.validation_split, dataset_reduction, n_objects_to_repeat)
         else:
-            test_size = 2000
-            self.sampler = BatchSampler(Sampler(np.arange(test_size)), batch_size, drop_last=True)
+            # _, self.sampler = self._split_sampler(self.validation_split, dataset_reduction, n_objects_to_repeat)
+            self.sampler = None #Sampler(np.arange(test_size))
 
         self.init_kwargs = {
             'dataset': dataset,

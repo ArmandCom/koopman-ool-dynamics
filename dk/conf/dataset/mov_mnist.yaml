@@ -16,6 +16,7 @@ loss: "embedding_loss"
 data_loader:
   type: "MovingMNISTLoader"
   args:
+    dataset_case: "spherical_manifold"
     dataset_name: ""
     seq_length: *SeqL
     seq_stride: 1
@@ -35,7 +36,7 @@ arch:
   args:
     in_channels: 1
     feat_dim: &Fdim 50
-    g_dim: &Gdim 12
+    g_dim: &Gdim 30
     r_dim: 10
     u_dim: 4
     n_objects: *Nobj
@@ -50,7 +51,7 @@ arch:
     free_pred: 15
     with_interactions: False
     batch_size: *BS
-    cte_app: False
+    cte_app: True
 #    collision_margin: 0.3
 
 optimizer:

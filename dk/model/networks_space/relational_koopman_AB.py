@@ -88,7 +88,7 @@ class U_Embedding(nn.Module):
         self.model_u = nn.Sequential(
             nn.Linear(s, hidden_size // 2),
             nn.ReLU(),
-            nn.Linear(hidden_size // 2, output_size)
+            nn.Linear(hidden_size // 2, 1)
         )
 
         self.model = nn.Sequential(
@@ -119,7 +119,7 @@ class U_Embedding(nn.Module):
         """
         BT, N, sd = x.shape
         u_logits = self.model_u(x)
-        u_enc = self.model(x)
+        u_enc = self.model(x).tanh()
 
         if collision_margin is None:
             # u = torch.exp(u_logits)
@@ -131,7 +131,7 @@ class U_Embedding(nn.Module):
             exit()
             u = get_u_states_mask(x, collision_margin, n_timesteps)
 
-        g_u = (u_enc * u).reshape(BT, N, -1) #* u
+        g_u = (u_enc).reshape(BT, N, -1) #* u
         g_u = g_u.reshape(-1, self.c, self.u_dim)
 
         return g_u, u, u_logits
@@ -200,7 +200,7 @@ class Rel_Embedding(nn.Module):
             sel = get_rel_states_mask(rel_x.chunk(3, -1)[-1], collision_margin, n_timesteps)
 
         mask_I = (- torch.eye(N)[None, :, :, None].to(x.device) + 1.0).reshape(1, N*N, 1)
-        g_rel = torch.sum((rel_enc * mask_I * sel).reshape(BT, N, N, -1), 2)
+        g_rel = torch.sum((rel_enc * mask_I).reshape(BT, N, N, -1), 2)
         g_rel = g_rel.reshape(-1, self.c, self.g)
         return g_rel, sel, sel_logits
 
@@ -315,7 +315,7 @@ class EncoderNetwork(nn.Module):
             # mask = self.softmax(mask)
             # tut.norm_grad(mask, 10)
             # mask = self.st_gumbel_softmax(mask)
-            obs = g #+ g_u + g_rel
+            obs = g
 
         else:
             # mask = torch.cat([g_sel_logits, u_logits], dim=-1)
@@ -346,7 +346,7 @@ class EncoderNetwork(nn.Module):
 
         # Note: We punish directly g_u
         if u is not None and g_u is not None:
-            u   =  u  .reshape(B, T, N, -1).permute(0, 2, 1, 3).reshape(B, N, T, -1)
+            u   =  g_u  .reshape(B, T, N, -1).permute(0, 2, 1, 3).reshape(B, N, T, -1)
         if u_logits is not None:
             u_logits = u_logits.reshape(B, T, N, -1).permute(0, 2, 1, 3).reshape(B, N, T, -1)
 
@@ -476,9 +476,10 @@ class KoopmanOperators(nn.Module, ABC):
 
     def print_SV(self):
             A = self.dynamics.dynamics.weight.data
-            # A += torch.eye(A.shape[0]).to(A.device)
-            U, S, V = torch.svd(A)
-            E = torch.eig(A)[0]
+            # A_I = torch.eye(A.shape[0]).to(A.device)
+            A_I = torch.zeros_like(A)
+            U, S, V = torch.svd(A + A_I)
+            E = torch.eig(A + A_I)[0]
             mod_E = torch.norm(E, dim=-1)
             print('Singular Values FW:\n',str(S.data.detach().cpu().numpy()),'\nEigenvalues FW:\n',str(mod_E.data.detach().cpu().numpy()))
 

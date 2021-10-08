@@ -25,9 +25,10 @@ class BouncingBallsDataset(data.Dataset):
         super(BouncingBallsDataset, self).__init__()
         self.n_frames = n_frames_input + n_frames_output
         self.dataset = make_dataset(root, train)
+        self.length = len(self.dataset)
         self.size = image_size
         self.scale = [self.size[0] / 800, self.size[1] / 800]
-        self.radius = int(60 * max(self.scale)) # Note: previously 60 *
+        self.radius = int(90 * max(self.scale)) # Note: previously 60 *
 
         sam_rate = 2
         self.sam_rate = int(sam_rate)
@@ -38,10 +39,18 @@ class BouncingBallsDataset(data.Dataset):
         self.transform = transform
         self.return_positions = return_positions
 
-        self.colors = [(10, 255, 0),
-                       (255, 10, 0),
-                       (0, 0, 255),
-                       (255, 50, 255),
+        # self.colors = [(10, 255, 0),
+        #                (255, 10, 0),
+        #                (0, 0, 255),
+        #                (255, 50, 255),
+        #                (255, 255, 50),
+        #                (50, 255, 255),
+        #                (153, 255, 153)]
+
+        self.colors = [(255, 255, 255),
+                       (255, 0, 128),
+                       (0, 128, 255),
+                       (128, 160, 10),
                        (255, 255, 50),
                        (50, 255, 255),
                        (153, 255, 153)]

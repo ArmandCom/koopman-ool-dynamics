@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from torch import autograd
 from torchvision.utils import make_grid
 from torchvision.transforms.functional import to_tensor
 from base import BaseTrainer
@@ -41,31 +42,36 @@ class Trainer(BaseTrainer):
         :param epoch: Integer, current training epoch.
         :return: A log that contains average loss and metric in this epoch.
         """
+
         self.model.train()
         self.train_metrics.reset()
 
         for batch_idx, data in enumerate(self.data_loader):
-            if self.config["data_loader"]["type"] == "MovingMNISTLoader":
-                data = overlap_objects_from_batch(data, self.config['n_objects'])
+            # if self.config["data_loader"]["type"] == "MovingMNISTLoader":
+            #     data = overlap_objects_from_batch(data, self.config['n_objects'])
             target = data # Is data a variable?
             data, target = data.to(self.device), target.to(self.device)
 
-            self.optimizer.zero_grad()
-            output = self.model(data, epoch_iter=(epoch, (epoch + 1)*batch_idx))
-            loss, loss_particles = self.criterion(output, target,
-                                                  epoch_iter=(epoch, (epoch-1)*len(self.data_loader)+batch_idx), lambd=self.config["trainer"]["lambd"])
-            loss = loss.mean()
+            with autograd.detect_anomaly():
 
-            # Note: from space implementation
-            # optimizer_fg.zero_grad()
-            # optimizer_bg.zero_grad()
-            # loss.backward()
-            # if cfg.train.clip_norm:
-            #     clip_grad_norm_(model.parameters(), cfg.train.clip_norm)
+                self.optimizer.zero_grad()
 
-            loss.backward()
-            # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1000)
-            self.optimizer.step()
+                output = self.model(data, epoch_iter=(epoch, (epoch + 1)*batch_idx))
+                loss, loss_particles = self.criterion(output, target,
+                                                      epoch_iter=(epoch, (epoch-1)*len(self.data_loader)+batch_idx),
+                                                      case=self.config["data_loader"]['args']["dataset_case"])
+                loss = loss.mean()
+
+                # Note: from space implementation
+                # optimizer_fg.zero_grad()
+                # optimizer_bg.zero_grad()
+                # loss.backward()
+                # if cfg.train.clip_norm:
+                #     clip_grad_norm_(model.parameters(), cfg.train.clip_norm)
+
+                loss.backward()
+                # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1000)
+                self.optimizer.step()
 
             self.writer.set_step((epoch - 1) * self.len_epoch + batch_idx)
             self.train_metrics.update('loss', loss.item())
@@ -77,7 +83,6 @@ class Trainer(BaseTrainer):
 
                 self.logger.debug('Train Epoch: {} {} '.format(epoch, self._progress(batch_idx)) + loss_particles_str + 'Loss: {:.6f}'.format(
                     loss.item()))
-
                 self._show(data, output)
 
             if batch_idx == self.len_epoch:
@@ -106,15 +111,15 @@ class Trainer(BaseTrainer):
         self.valid_metrics.reset()
         with torch.no_grad():
             for batch_idx, data in enumerate(self.valid_data_loader):
-                if self.config["data_loader"]["type"] == "MovingMNISTLoader":
-                    data = overlap_objects_from_batch(data, self.config['n_objects'])
+                # if self.config["data_loader"]["type"] == "MovingMNISTLoader":
+                #     data = overlap_objects_from_batch(data, self.config['n_objects'])
                 target = data  # Is data a variable?
                 data, target = data.to(self.device), target.to(self.device)
 
-                output = self.model(data, epoch_iter=(epoch, (epoch + 1)*batch_idx))
+                output = self.model(data, epoch_iter=(epoch, (epoch + 1)*batch_idx), test=True)
                 loss, loss_particles = self.criterion(output, target,
                                                       epoch_iter=(epoch, (epoch + 1)*batch_idx),
-                                                      lambd=self.config["trainer"]["lambd"])
+                                                      case=self.config["data_loader"]['args']["dataset_case"])
 
                 self.writer.set_step((epoch - 1) * len(self.valid_data_loader) + batch_idx, 'valid')
                 self.valid_metrics.update('loss', loss.item())
@@ -141,11 +146,17 @@ class Trainer(BaseTrainer):
     def _show(self, data, output, train=True):
 
         rec = output["rec_ori"]
-        data_plot = data[0, -output["pred_roll"].shape[1]:]
-        rec_plot = output["rec_ori"][0, -output["pred_roll"].shape[1]:]
-        pred_plot = output["pred_roll"][0]
-        vid_plot = torch.cat([data_plot, rec_plot, pred_plot], dim=0)
-        self.writer.add_image('a-Videos--Input-Rec-Pred', make_grid(vid_plot.cpu(), nrow=output["pred_roll"].shape[1], normalize=True))
+
+        if output["pred_roll"] is not None:
+            data_plot = data[0, -output["pred_roll"].shape[1]:]
+            rec_plot = output["rec_ori"][0, -output["pred_roll"].shape[1]:]
+            pred_plot = output["pred_roll"][0]
+            vid_plot = torch.cat([data_plot, rec_plot, pred_plot], dim=0)
+            nrow = output["pred_roll"].shape[1]
+        else:
+            vid_plot = torch.cat([data[0, -output["rec_ori"].shape[1]:], output["rec_ori"][0, :]], dim=0)
+            nrow = output["rec_ori"].shape[1]
+        self.writer.add_image('a-Videos--Input-Rec-Pred', make_grid(vid_plot.cpu(), nrow=nrow, normalize=True))
 
         # self.writer.add_image('a-input', make_grid(data[0].cpu(), nrow=data.shape[1], normalize=True))
         # self.writer.add_image('b-output_rec', make_grid(output["rec"][0, -output["pred"].shape[1]:].cpu(), nrow=output["pred"].shape[1], normalize=True))
@@ -156,22 +167,29 @@ class Trainer(BaseTrainer):
         #     S_plot = plot_matrix(output["selector"])
         #     self.writer.add_image('ba-S', make_grid(S_plot, nrow=1, normalize=False))
         if output["obs_rec_pred"] is not None:
-            g_plot = plot_representation        (output["obs_rec_pred"][:,rec.shape[1]-output["pred"].shape[1]:rec.shape[1]].cpu())
-            g_plot_pred = plot_representation   (output["obs_rec_pred"][:,rec.shape[1]:].cpu())
+            if output["pred"] is not None:
+                g_plot = plot_representation        (output["obs_rec_pred"][:,rec.shape[1]-output["pred"].shape[1]:rec.shape[1]].cpu())
+                g_plot_pred = plot_representation   (output["obs_rec_pred"][:,rec.shape[1]:].cpu())
+                self.writer.add_image('e-g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
+            else: g_plot = plot_representation        (output["obs_rec_pred"].cpu())
             self.writer.add_image('d-g_repr_rec', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
-            self.writer.add_image('e-g_repr_pred', make_grid(to_tensor(g_plot_pred), nrow=1, normalize=False))
+
         if output["obs_rec_pred_rev"] is not None:
             g_plot = plot_representation        (output["obs_rec_pred_rev"].cpu())
             self.writer.add_image('ea-g_repr_pred_rev', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
         if output["dyn_features"] is not None:
             # g_plot = plot_representation        (output["dyn_features"]["rec_ori"].cpu())
             # self.writer.add_image('states_rec_ori', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
-            g_plot = plot_representation        (output["dyn_features"]["rec_ori"][:,-output["pred"].shape[1]:].cpu())
+            g_plot = plot_representation        (output["dyn_features"]["rec_ori"].cpu()) #[:,-output["pred"].shape[1]:].cpu())
             self.writer.add_image('states_rec', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
-            g_plot = plot_representation        (output["dyn_features"]["pred"].cpu())
-            self.writer.add_image('states_pred', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
-            g_plot = plot_representation        (output["dyn_features"]["pred_roll"].cpu())
-            self.writer.add_image('states_pred_roll', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
+
+            if output["pred"] is not None:
+                g_plot = plot_representation        (output["dyn_features"]["pred"].cpu())
+                self.writer.add_image('states_pred', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
+            if output["pred_roll"] is not None:
+                g_plot = plot_representation        (output["dyn_features"]["pred_roll"].cpu())
+                self.writer.add_image('states_pred_roll', make_grid(to_tensor(g_plot), nrow=1, normalize=False))
+
         if output["A"] is not None:
             A_plot = plot_matrix(output["A"])
             self.writer.add_image('f-A', make_grid(A_plot, nrow=1, normalize=False))
@@ -183,18 +201,18 @@ class Trainer(BaseTrainer):
         # else:
         #     AA_plot = plot_matrix(torch.mm(output["A"],torch.pinverse(output["A"])))
         #     self.writer.add_image('fb-AA', make_grid(AA_plot, nrow=1, normalize=False))
-        if output["selectors_rec"] is not None:
-            sels_rec = output["selectors_rec"]
-            if output["selectors_pred"] is not None:
-                sels_pred = output["selectors_pred"]
-                sel_rec_plot = plot_representation(sels_rec[:,-sels_pred.shape[1]:].cpu())
-            else:
-                sel_rec_plot = plot_representation(sels_rec.cpu())
-            self.writer.add_image('b-sel_repr_rec', make_grid(to_tensor(sel_rec_plot), nrow=1, normalize=False))
-        if output["selectors_pred"] is not None:
-            sels_pred = output["selectors_pred"]
-            sel_pred_plot = plot_representation(sels_pred.cpu())
-            self.writer.add_image('b-sel_repr_pred', make_grid(to_tensor(sel_pred_plot), nrow=1, normalize=False))
+        # if output["selectors_rec"] is not None:
+        #     sels_rec = output["selectors_rec"]
+        #     if output["selectors_pred"] is not None:
+        #         sels_pred = output["selectors_pred"]
+        #         sel_rec_plot = plot_representation(sels_rec[:,-sels_pred.shape[1]:].cpu())
+        #     else:
+        #         sel_rec_plot = plot_representation(sels_rec.cpu())
+        #     self.writer.add_image('b-sel_repr_rec', make_grid(to_tensor(sel_rec_plot), nrow=1, normalize=False))
+        # if output["selectors_pred"] is not None:
+        #     sels_pred = output["selectors_pred"]
+        #     sel_pred_plot = plot_representation(sels_pred.cpu())
+        #     self.writer.add_image('b-sel_repr_pred', make_grid(to_tensor(sel_pred_plot), nrow=1, normalize=False))
         if output["B"] is not None:
             B_plot = plot_matrix(output["B"])
             self.writer.add_image('g-B', make_grid(B_plot, nrow=1, normalize=False))
